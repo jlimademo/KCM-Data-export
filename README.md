@@ -2,21 +2,13 @@ This assumes you have the port open for database container access as per below:
 
 Open MySQL port to local machine
 
-In order for the file to query the database from within the Docker container, edit the /etc/kcm-setup/docker-compose.yml file and add the "ports" section to the "db" container as displayed below:
+In order for the file to query the database from within the Docker container, edit the /etc/kcm-setup/docker-compose.yml file and add the "ports" section to the "db" container as per the url :
 
-db:
-        image: keeper/guacamole-db-mysql :2
-        restart: unless-stopped 
-        environment:
-            ACCEPT EULA: "Y"
-            GUACAMOLE_DATABASE: "guacamole_db"
-            GUACAMOLE_USERNAME: "guacamole_user"
-            GUACAMOLE_PASSWORD: "XXXXXXXXXXXXXXXXXXXXXXXXX"
-            GUACAMOLE_ADMIN_PASSWORD: "XXXXXXXXXXXXXXXXXXXXXXXXX"
-            MYSQL_ROOT_PASSWORD: "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
-        LOG_LEVEL: "debug"
-        ports:
-            - "3306:3306"            
+https://docs.keeper.io/en/keeper-connection-manager/exporting-connections
+
+
+The script below is a modification of the one described in the url above
+
 
 # KCM Data Export Scripts
 
