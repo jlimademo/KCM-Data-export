@@ -1,3 +1,23 @@
+This assumes you have the port open for database container access as per below:
+
+Open MySQL port to local machine
+
+In order for the file to query the database from within the Docker container, edit the /etc/kcm-setup/docker-compose.yml file and add the "ports" section to the "db" container as displayed below:
+
+db:
+        image: keeper/guacamole-db-mysql :2
+        restart: unless-stopped 
+        environment:
+            ACCEPT EULA: "Y"
+            GUACAMOLE_DATABASE: "guacamole_db"
+            GUACAMOLE_USERNAME: "guacamole_user"
+            GUACAMOLE_PASSWORD: "XXXXXXXXXXXXXXXXXXXXXXXXX"
+            GUACAMOLE_ADMIN_PASSWORD: "XXXXXXXXXXXXXXXXXXXXXXXXX"
+            MYSQL_ROOT_PASSWORD: "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+        LOG_LEVEL: "debug"
+        ports:
+            - "3306:3306"            
+
 # KCM Data Export Scripts
 
 This repository contains three scripts designed for exporting data from the KCM system. Each script offers different functionalities and approaches for extracting and exporting database records efficiently.
