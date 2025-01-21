@@ -1,8 +1,7 @@
-################################################################################
-README FILE
-################################################################################
-================================== FILE DESCRIPTIONS ==================================
-exportscript.py
+
+                                    exportscript.py
+
+
 This is the primary Python script used to extract data from the database and generate
 a structured JSON export for all protocols and their corresponding fields.
 Features:
