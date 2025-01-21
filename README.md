@@ -101,6 +101,6 @@ Ensure the following dependencies are installed before running any scripts:
 
 ---
 
-*Author: Your Name*  
+Joao Lima
 *Version: 1.0*  
 *Date: 2025-01-21*
