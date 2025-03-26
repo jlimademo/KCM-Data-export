@@ -1,118 +1,164 @@
-This assumes you have the port open for database container access as per below:
+# Guacamole Export Tool
 
-Open MySQL port to local machine
+## Disclaimer
 
-In order for the file to query the database from within the Docker container, edit the /etc/kcm-setup/docker-compose.yml file and add the "ports" section to the "db" container as per the url :
+⚠️ **Caution**: This tool modifies system configurations, interacts with Docker containers, and handles sensitive connection data. It may restart services, expose ports, and generate exports of connection information. 
 
-https://docs.keeper.io/en/keeper-connection-manager/exporting-connections
+Use carefully, always create backups, and test in a non-production environment first. The authors are not responsible for any unintended consequences.
 
+## License
 
-The script below is a modification of the one described in the url above
+This work is licensed under a Creative Commons Attribution-NonCommercial 4.0 International License (CC BY-NC 4.0). 
 
+[![CC BY-NC 4.0](https://i.creativecommons.org/l/by-nc/4.0/88x31.png)](http://creativecommons.org/licenses/by-nc/4.0/)
 
-# KCM Data Export Scripts
+You are free to:
+- Share — copy and redistribute the material in any medium or format
+- Adapt — remix, transform, and build upon the material
 
-This repository contains three scripts designed for exporting data from the KCM system. Each script offers different functionalities and approaches for extracting and exporting database records efficiently.
+Under the following terms:
+- Attribution — You must give appropriate credit to the original creator
+- NonCommercial — You may not use the material for commercial purposes
 
----
+For commercial use or additional permissions, please contact the original author.
 
-## Script Descriptions
+## Overview
 
-### 1. `KCM-Enhanced-Export.sh`
-The **Enhanced Export script** is a combination of Bash and Python, integrating the strengths of both scripts to provide a seamless and robust data export solution.
+The Guacamole Export Tool is a Bash script designed to export Apache Guacamole connection data into standard JSON/CSV and Keeper PAM-ready formats. It provides flexible export options, secure credential handling, and optional direct import to Keeper Vault.
 
-**Key Features:**
-- Extracts database credentials using Python for reliable YAML parsing.
-- Prompts the user to select data categories (history, users, groups, connections).
-- Ensures proper error handling through structured logging.
-- Exports data into JSON format for easy analysis and visualization.
-- Dynamically handles paths and user inputs.
+## Features
 
----
+- 🔍 Interactive and CLI modes
+- 🔒 Credential sanitization options
+- 📦 Export in multiple formats:
+  - Standard Guacamole full data export
+  - Keeper PAM-ready format
+- 🛠 Docker Compose file port inspection and patching
+- 🌐 Supports various connection configurations
+- 📥 Optional direct import to Keeper Vault
 
-### 2. `KCM-data-exportscript.py`
-This standalone **Python script** focuses on exporting data directly from the database by reading credentials from the `docker-compose.yml` file.
+## Prerequisites
 
-**Key Features:**
-- Uses Python's `yaml` module to accurately parse the `docker-compose.yml` file for credentials.
-- Connects to the database and retrieves all connection-related data.
-- Outputs data in JSON format.
-- Structured exception handling for errors.
-- Fully automated process without user interaction.
+- Bash
+- Python 3
+- Required Python modules:
+  - `pyyaml`
+  - `mysql-connector-python`
+- Optional: Keeper Commander (for Keeper Vault import)
 
----
+## Installation
 
-### 3. `KCM-data-exportscript.sh`
-This **Bash script** provides an interactive way for users to export specific data categories by manually parsing credentials and invoking the export process.
+1. Clone the repository or download the script
+2. Make the script executable:
+   ```bash
+   chmod +x guac-export.sh
+   ```
+3. Install required Python dependencies:
+   ```bash
+   pip install pyyaml mysql-connector-python
+   ```
+4. Optional: Install Keeper Commander
+   ```bash
+   pip install keeper-commander
+   ```
 
-**Key Features:**
-- Prompts the user for database port and export options.
-- Parses credentials from `docker-compose.yml` using Bash utilities (`grep`, `cut`).
-- Exports selected data categories (history, users, groups, connections).
-- Basic error handling and logging via Bash functions.
+## Usage
 
----
+### Interactive Mode
 
-## Feature Comparison
-
-| Feature                    | KCM-Enhanced-Export.sh | KCM-data-exportscript.py | KCM-data-exportscript.sh |
-|----------------------------|-----------------------|--------------------------|--------------------------|
-| **User Interaction**        | Yes (Menu-driven)      | No                        | Yes (Menu-driven)         |
-| **Credential Extraction**   | Python (YAML parsing)  | Python (YAML parsing)     | Bash (`grep`, `cut`)      |
-| **Data Export Method**      | Python (MySQL queries) | Python (MySQL queries)    | Python (MySQL queries)    |
-| **Export Format**           | JSON                   | JSON                       | JSON                       |
-| **Error Handling**          | Bash & Python (Logs)   | Python (Exception Handling) | Bash (Basic Logging)     |
-| **Automation Level**        | Semi-automated         | Fully automated            | Semi-automated            |
-| **Dependencies**            | Bash, Python, jq       | Python (`mysql.connector`) | Bash, Python              |
-| **Best Use Case**           | Interactive & Reliable | Automated & Scheduled      | Quick manual exports      |
-
----
-
-## How to Use
-
-### Running the Enhanced Export Script:
+Run the script without arguments to enter interactive mode:
 ```bash
-chmod +x KCM-Enhanced-Export.sh
-./KCM-Enhanced-Export.sh
+./guac-export.sh
 ```
-Follow the on-screen prompts to select export options and provide necessary inputs.
 
----
+### CLI Mode
 
-### Running the Python Script:
-```bash
-python3 KCM-data-exportscript.py
-```
-This script will automatically fetch credentials and export all data.
+#### Export Options
+- `--keeper`: Export Keeper PAM-ready JSON
+- `--standard`: Export full Guacamole data
+- `--both`: Export both formats
 
----
+#### Additional Flags
+- `--output-dir DIR`: Custom export directory
+- `--filename-prefix PREFIX`: Prefix for output files
+- `--push-to-keeper`: Push Keeper records using Keeper Commander
+- `--compose-file FILE`: Path to docker-compose.yml
+- `--db-host HOST`: Database host (default: localhost)
+- `--db-port PORT`: Database port (default: 3306)
+- `--sanitize MODE`: Credential sanitization mode (none, placeholder, remove)
 
-### Running the Bash Script:
-```bash
-chmod +x KCM-data-exportscript.sh
-./KCM-data-exportscript.sh
-```
-User-friendly prompts will guide the export process.
+### Examples
 
----
+1. Interactive export:
+   ```bash
+   ./guac-export.sh
+   ```
 
-## Dependencies
+2. Export both standard and Keeper formats:
+   ```bash
+   ./guac-export.sh --both
+   ```
 
-Ensure the following dependencies are installed before running any scripts:
+3. Export to a specific directory with a custom prefix:
+   ```bash
+   ./guac-export.sh --keeper --output-dir /path/to/exports --filename-prefix myguac
+   ```
 
-- **For Bash scripts:** `bash`, `jq`, `python3`
-- **For Python scripts:** `pip install mysql-connector-python pyyaml`
+4. Push to Keeper Vault after exporting:
+   ```bash
+   ./guac-export.sh --keeper --push-to-keeper
+   ```
 
----
+## Credential Sanitization Modes
 
-## Conclusion
+- `none`: Include actual credentials (least secure)
+- `placeholder`: Replace credentials with placeholders (recommended)
+- `remove`: Remove credential fields completely
 
-- Use **KCM-Enhanced-Export.sh** for the best balance of automation and user control.
-- Use **KCM-data-exportscript.py** for fully automated, non-interactive exports.
-- Use **KCM-data-exportscript.sh** for quick manual exports with minimal dependencies.
+## Docker Compose Integration
 
----
+The script can automatically:
+- Inspect your docker-compose.yml file
+- Detect if database ports are exposed
+- Offer to patch and expose database ports
 
-Joao Lima
-*Version: 1.0*  
-*Date: 2025-01-21*
+## Security Notes
+
+- Always be cautious when handling connection credentials
+- Use the sanitization modes to protect sensitive information
+- Ensure the script and exported files have restricted permissions
+
+## Troubleshooting
+
+- Verify Python dependencies are installed
+- Check Docker Compose file path
+- Ensure database connectivity
+- Review script logs for detailed error messages
+
+## Contributing
+
+Contributions, issues, and feature requests are welcome! Feel free to check the issues page.
+
+## Licensing
+
+### Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)
+
+#### You are free to:
+- **Share** — copy and redistribute the material in any medium or format
+- **Adapt** — remix, transform, and build upon the material
+
+#### Under the following terms:
+- **Attribution** — You must give appropriate credit to the original creator
+- **NonCommercial** — You may not use the material for commercial purposes
+
+#### Additional Restrictions:
+- Commercial use of this work requires explicit written permission from the original creator
+- Any derivative works must be shared under the same license terms
+- Attribution must include the original creator's name and a link to the original work
+
+#### Full License Details
+For complete license terms, visit: [Creative Commons Attribution-NonCommercial 4.0 International License](http://creativecommons.org/licenses/by-nc/4.0/)
+
+[![CC BY-NC 4.0](https://i.creativecommons.org/l/by-nc/4.0/88x31.png)](http://creativecommons.org/licenses/by-nc/4.0/)
+
+**Note:** For commercial use or additional permissions, please contact the original author.
