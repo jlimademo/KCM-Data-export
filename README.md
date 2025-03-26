@@ -1,4 +1,4 @@
-# Guacamole Export Tool
+# Guacamole - Keeper Connection manager - Export Tool
 
 ## Disclaimer
 
