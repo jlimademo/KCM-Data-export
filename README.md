@@ -6,22 +6,6 @@
 
 Use carefully, always create backups, and test in a non-production environment first. The authors are not responsible for any unintended consequences.
 
-## License
-
-This work is licensed under a Creative Commons Attribution-NonCommercial 4.0 International License (CC BY-NC 4.0). 
-
-[![CC BY-NC 4.0](https://i.creativecommons.org/l/by-nc/4.0/88x31.png)](http://creativecommons.org/licenses/by-nc/4.0/)
-
-You are free to:
-- Share — copy and redistribute the material in any medium or format
-- Adapt — remix, transform, and build upon the material
-
-Under the following terms:
-- Attribution — You must give appropriate credit to the original creator
-- NonCommercial — You may not use the material for commercial purposes
-
-For commercial use or additional permissions, please contact the original author.
-
 ## Overview
 
 The Guacamole Export Tool is a Bash script designed to export Apache Guacamole connection data into standard JSON/CSV and Keeper PAM-ready formats. It provides flexible export options, secure credential handling, and optional direct import to Keeper Vault.
