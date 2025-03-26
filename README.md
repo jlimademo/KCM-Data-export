@@ -10,16 +10,36 @@ Use carefully, always create backups, and test in a non-production environment f
 
 The Guacamole Export Tool is a Bash script designed to export Apache Guacamole connection data into standard JSON/CSV and Keeper PAM-ready formats. It provides flexible export options, secure credential handling, and optional direct import to Keeper Vault.
 
-## Features
+Features
+🔍 Interactive and CLI modes
 
-- 🔍 Interactive and CLI modes
-- 🔒 Credential sanitization options
-- 📦 Export in multiple formats:
-  - Standard Guacamole full data export
-  - Keeper PAM-ready format
-- 🛠 Docker Compose file port inspection and patching
-- 🌐 Supports various connection configurations
-- 📥 Optional direct import to Keeper Vault
+🔒 Credential sanitization options (none, placeholder, remove)
+
+📦 Export in multiple formats:
+
+Standard Guacamole full data export (.json and .csv)
+
+Keeper PAM-ready export (.json and .csv)
+
+📥 Optional direct import to Keeper Vault using Keeper Commander
+
+🛠 Docker Compose file port inspection and patching
+
+Automatically detects if MySQL port is exposed
+
+Offers to patch and backup the compose file if not
+
+🌐 Supports various Guacamole connection configurations
+
+Compatible with different protocols and versions
+
+🧪 MySQL connectivity test (via mysqladmin, optional)
+
+🧰 Dependency auto-check and installation
+
+Verifies all required tools and Python modules
+
+Automatically installs mysql-connector-python if missing
 
 ## Prerequisites
 
