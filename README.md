@@ -12,6 +12,11 @@ A utility script that exports Apache Guacamole connection data into Keeper PAM-r
 
 ## Overview
 
+## Disclaimer
+
+⚠️ **Caution**: This tool modifies system configurations and handles connection data. Always test in a non-production environment first and create backups before use.
+
+
 The Keeper PAM Export Tool simplifies migrating Apache Guacamole connections to Keeper's Privileged Access Management system. It automatically inspects your Docker Compose configuration, extracts database credentials, and transforms connection data into the proper format for Keeper PAM import.
 
 ## Prerequisites
@@ -109,6 +114,4 @@ If you encounter issues:
 3. Check Docker Compose configuration
 4. Ensure your Guacamole database is properly configured
 
-## Disclaimer
 
-⚠️ **Caution**: This tool modifies system configurations and handles connection data. Always test in a non-production environment first and create backups before use.
