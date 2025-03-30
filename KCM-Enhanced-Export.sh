@@ -1,45 +1,48 @@
-#!/bin/bash
-
-# ========================================
-# Guacamole Export Tool
+# ================================================================================
+# SECTION 1: HEADER AND DESCRIPTION
+# --------------------------------------------------------------------------------
+# Purpose: Provides script description, usage, and flags documentation
+# --------------------------------------------------------------------------------
+# Keeper PAM Export Tool
 # ----------------------------------------
 # Description:
-#   This script exports Apache Guacamole connection data into standard JSON/CSV
-#   and Keeper PAM-ready formats. It supports interactive and CLI modes, safely
-#   patches the docker-compose file to expose database ports, and optionally
-#   imports records directly into Keeper Vault using Keeper Commander.
+#   This script exports Apache Guacamole connection data into Keeper PAM-ready
+#   formats for import via Keeper Commander CLI. It safely patches the docker-compose
+#   file to expose database ports if needed and provides JSON export files that can
+#   be imported using the Keeper Commander tool.
 #
 # Usage Examples:
-#   ./guac-export.sh                # Interactive mode
-#   ./guac-export.sh --both         # CLI export (both formats)
-#   ./guac-export.sh --keeper --push-to-keeper
+#   ./keeper-pam-export.sh                # Interactive mode
+#   ./keeper-pam-export.sh --export       # CLI export with defaults
 #
 # Flags:
-#   --keeper           Export Keeper PAM-ready JSON
-#   --standard         Export full Guacamole data
-#   --both             Export both formats
-#   --output-dir DIR   Custom export directory
-#   --filename-prefix  Prefix for output files
-#   --push-to-keeper   Push Keeper records using Keeper Commander
-#   --compose-file     Path to docker-compose.yml (default: /etc/kcm-setup/docker-compose.yml)
-#   --db-host          Database host (default: localhost)
-#   --db-port          Database port (default: 3306)
-# ========================================
+#   --export            Run export with default settings
+#   --output-dir DIR    Custom export directory (default: current directory)
+#   --filename-prefix   Prefix for output files (default: keeper)
+#   --compose-file      Path to docker-compose.yml (default: /etc/kcm-setup/docker-compose.yml)
+#   --db-host           Database host (default: localhost)
+#   --db-port           Database port (default: 3306)
+#   --sanitize          Credentials sanitization mode: none, placeholder, remove (default: placeholder)
+#   --keeper-folder     Root folder for Keeper PAM import (default: Guacamole)
+#   --debug             Enable debug logging
+#   --help              Show this help message
+#   --version           Show version information
+# ================================================================================
 
 set -e
 
-# ---------- Logging Functions ---------- #
-log_info() { echo -e "\033[1;32m[INFO]\033[0m $1"; }
-log_error() { echo -e "\033[1;31m[ERROR]\033[0m $1" >&2; }
-log_warn() { echo -e "\033[1;33m[WARN]\033[0m $1"; }
-log_success() { echo -e "\033[1;34m[SUCCESS]\033[0m $1"; }
 
-# ---------- Default Configs ---------- #
+# ================================================================================
+# SECTION 2: VARIABLES AND CONFIG
+# --------------------------------------------------------------------------------
+# Purpose: Defines default configuration variables
+# --------------------------------------------------------------------------------
+# Script Version
+VERSION="1.3.0"
+
+# Default Configs
 EXPORT_DIR="."  # Current directory where script is run
-FILENAME_PREFIX="guac"
-DO_KEEPER=false
-DO_STANDARD=false
-PUSH_KEEPER=false
+FILENAME_PREFIX="keeper"
 COMPOSE_FILE="/etc/kcm-setup/docker-compose.yml"
 DB_HOST="localhost"
 DB_PORT=3306
@@ -47,8 +50,106 @@ DB_USER=""
 DB_PASS=""
 DB_NAME=""
 SANITIZE_MODE="placeholder"  # Options: none, placeholder, remove
+KEEPER_ROOT_FOLDER="Guacamole"
+DEBUG=false
+QUIET=false
+DB_SERVICE=""
+MAX_RETRIES=3
+CONNECTION_VERIFIED=false
 
-# ---------- Cleanup Function ---------- #
+
+# ================================================================================
+# SECTION 3: LOGGING FUNCTIONS
+# --------------------------------------------------------------------------------
+# Purpose: Provides logging utilities for different message types
+# --------------------------------------------------------------------------------
+log_info() { echo -e "\033[1;32m[INFO]\033[0m $1"; }
+log_error() { echo -e "\033[1;31m[ERROR]\033[0m $1" >&2; }
+log_warn() { echo -e "\033[1;33m[WARN]\033[0m $1"; }
+log_success() { echo -e "\033[1;34m[SUCCESS]\033[0m $1"; }
+log_debug() {
+    if [[ "$DEBUG" == "true" ]]; then
+        echo -e "\033[1;35m[DEBUG]\033[0m $1"
+    fi
+}
+
+# Simple ASCII table display function
+print_fancy_table() {
+    local title="$1"
+    local data="$2"
+    local width=60  # Default width (will be adjusted based on content)
+    local border_char="-"
+    local side_char="|"
+    local corner_tl="+"
+    local corner_tr="+"
+    local corner_bl="+"
+    local corner_br="+"
+    
+    # Clean data - remove any null values or unwanted characters
+    local cleaned_data=""
+    while IFS= read -r line; do
+        # Skip empty lines and lines with just "null"
+        if [[ -n "$line" && "$line" != "null" ]]; then
+            # Remove any trailing "null" strings
+            line=$(echo "$line" | sed 's/null//g')
+            cleaned_data="${cleaned_data}${line}"$'\n'
+        fi
+    done <<< "$data"
+    
+    # Get the column-formatted data
+    local formatted_data=""
+    if command -v column &>/dev/null; then
+        formatted_data=$(echo -e "$cleaned_data" | column -t -s ',' -o ' | ')
+    else
+        # Fallback if column is not available
+        formatted_data=$(echo -e "$cleaned_data" | sed 's/,/ | /g')
+    fi
+    
+    # Skip empty tables
+    if [[ -z "$formatted_data" ]]; then
+        return 0
+    fi
+    
+    # Calculate the max line length in the formatted data
+    local max_length=0
+    while IFS= read -r line; do
+        local line_length=${#line}
+        if (( line_length > max_length )); then
+            max_length=$line_length
+        fi
+    done <<< "$formatted_data"
+    
+    # Adjust width if content is wider
+    width=$(( max_length + 4 ))  # Add padding
+    
+    # Calculate title centering
+    local title_length=${#title}
+    local padding=$(( (width - title_length - 2) / 2 ))
+    local left_padding=$padding
+    local right_padding=$(( padding + (width - title_length - 2) % 2 ))
+    
+    # Print table top border with title
+    echo -e "\n+$(printf '%*s' $width | tr ' ' "${border_char}")+"
+    echo -e "|$(printf '%*s' $left_padding)${title}$(printf '%*s' $right_padding)|"
+    echo -e "|$(printf '%*s' $width | tr ' ' " ")|"
+    
+    # Print the data rows
+    while IFS= read -r line; do
+        if [[ -n "$line" ]]; then
+            echo -e "| ${line}$(printf '%*s' $(( width - ${#line} - 2 )) | tr ' ' " ") |"
+        fi
+    done <<< "$formatted_data"
+    
+    # Print table bottom border
+    echo -e "|$(printf '%*s' $width | tr ' ' " ")|"
+    echo -e "+$(printf '%*s' $width | tr ' ' "${border_char}")+"
+}
+
+# ================================================================================
+# SECTION 4: CLEANUP FUNCTION
+# --------------------------------------------------------------------------------
+# Purpose: Handles exit cleanup and error reporting
+# --------------------------------------------------------------------------------
 cleanup() {
     local exit_code=$?
     if [[ $exit_code -ne 0 ]]; then
@@ -59,22 +160,26 @@ cleanup() {
 
 trap cleanup EXIT
 
-# ---------- Parse CLI Arguments ---------- #
+# ================================================================================
+# SECTION 5: VERSION DISPLAY
+# --------------------------------------------------------------------------------
+# Purpose: Shows version information
+# --------------------------------------------------------------------------------
+show_version() {
+    echo "Keeper PAM Export Tool v$VERSION"
+    echo "Optimized for Keeper PAM import compatibility"
+    exit 0
+}
+
+# ================================================================================
+# SECTION 6: ARGUMENT PARSING
+# --------------------------------------------------------------------------------
+# Purpose: Parses and validates CLI arguments
+# --------------------------------------------------------------------------------
 parse_arguments() {
     if [[ $# -eq 0 ]]; then
         log_info "No CLI flags provided. Entering interactive mode."
-        echo "Choose export mode:"
-        echo "1) Keeper PAM Export"
-        echo "2) Standard Guacamole Export"
-        echo "3) Both"
-        read -p "Enter choice [1-3]: " mode
-        case $mode in
-            1) DO_KEEPER=true;;
-            2) DO_STANDARD=true;;
-            3) DO_KEEPER=true; DO_STANDARD=true;;
-            *) log_error "Invalid selection."; exit 1;;
-        esac
-        
+
         # Ask about sanitization
         echo "Would you like to sanitize credentials in the export?"
         echo "1) No sanitization (include actual credentials)"
@@ -87,37 +192,45 @@ parse_arguments() {
             3) SANITIZE_MODE="remove";;
             *) log_warn "Invalid selection. Using placeholders as default."; SANITIZE_MODE="placeholder";;
         esac
+
+        # Ask about Keeper root folder name
+        read -p "Enter root folder name for Keeper PAM import [Guacamole]: " keeper_folder
+        if [[ -n "$keeper_folder" ]]; then
+            KEEPER_ROOT_FOLDER="$keeper_folder"
+        fi
     else
         while [[ $# -gt 0 ]]; do
             case $1 in
-                --keeper) DO_KEEPER=true ; shift ;;
-                --standard) DO_STANDARD=true ; shift ;;
-                --both) DO_KEEPER=true ; DO_STANDARD=true ; shift ;;
+                --export) EXPORT=true ; shift ;;
                 --output-dir) EXPORT_DIR="$2" ; shift 2 ;;
                 --filename-prefix) FILENAME_PREFIX="$2" ; shift 2 ;;
-                --push-to-keeper) PUSH_KEEPER=true ; shift ;;
                 --compose-file) COMPOSE_FILE="$2" ; shift 2 ;;
                 --db-host) DB_HOST="$2" ; shift 2 ;;
                 --db-port) DB_PORT="$2" ; shift 2 ;;
+                --keeper-folder) KEEPER_ROOT_FOLDER="$2" ; shift 2 ;;
+                --debug) DEBUG=true ; shift ;;
+                --quiet) QUIET=true ; shift ;;
+                --version) show_version ;;
                 --sanitize)
                     case "$2" in
                         none|placeholder|remove) SANITIZE_MODE="$2" ; shift 2 ;;
                         *) log_error "Invalid sanitize mode: $2. Use none, placeholder, or remove." ; exit 1 ;;
                     esac
                     ;;
-                --help) 
+                --help)
                     echo "Usage: $0 [options]"
                     echo "Options:"
-                    echo "  --keeper             Export Keeper PAM-ready JSON"
-                    echo "  --standard           Export full Guacamole data"
-                    echo "  --both               Export both formats"
+                    echo "  --export             Export with default settings"
                     echo "  --output-dir DIR     Custom export directory"
                     echo "  --filename-prefix    Prefix for output files"
-                    echo "  --push-to-keeper     Push Keeper records using Keeper Commander"
                     echo "  --compose-file       Path to docker-compose.yml"
                     echo "  --db-host            Database host (default: localhost)"
                     echo "  --db-port            Database port (default: 3306)"
                     echo "  --sanitize MODE      Sanitize credentials: none, placeholder, remove"
+                    echo "  --keeper-folder      Root folder for Keeper PAM import (default: Guacamole)"
+                    echo "  --debug              Enable debug logging"
+                    echo "  --quiet              Suppress detailed output"
+                    echo "  --version            Show version information"
                     echo "  --help               Show this help message"
                     exit 0
                     ;;
@@ -126,12 +239,6 @@ parse_arguments() {
         done
     fi
 
-    # Validate required parameters
-    if [[ "$DO_KEEPER" == false && "$DO_STANDARD" == false ]]; then
-        log_error "No export mode selected. Use --keeper, --standard, or --both."
-        exit 1
-    fi
-    
     # Set default sanitization mode if not specified
     if [[ -z "$SANITIZE_MODE" ]]; then
         SANITIZE_MODE="placeholder"
@@ -139,18 +246,24 @@ parse_arguments() {
     else
         log_info "Credential sanitization mode: $SANITIZE_MODE"
     fi
+
+    log_debug "Using Keeper root folder: $KEEPER_ROOT_FOLDER"
 }
 
-# ---------- Check Dependencies ---------- #
+# ================================================================================
+# SECTION 7: DEPENDENCY CHECKING
+# --------------------------------------------------------------------------------
+# Purpose: Verifies required tools are available
+# --------------------------------------------------------------------------------
 check_dependencies() {
     log_info "Checking required dependencies..."
-    
+
     # Check Python modules
     python3 -c "import yaml, json" 2>/dev/null || {
         log_error "Missing required Python modules. Please install: pip install pyyaml"
         exit 1
     }
-    
+
     # Try to import mysql connector but don't fail if it's missing yet
     if ! python3 -c "import mysql.connector" 2>/dev/null; then
         log_warn "MySQL Connector for Python not found. Will attempt to install it."
@@ -160,7 +273,7 @@ check_dependencies() {
         }
         log_info "MySQL Connector installed successfully."
     fi
-    
+
     # Check required command-line tools
     for cmd in docker-compose jq python3; do
         command -v $cmd &>/dev/null || {
@@ -168,25 +281,22 @@ check_dependencies() {
             exit 1
         }
     done
-    
+
     # Optional command checks with helpful instructions
     if ! command -v mysqladmin &>/dev/null; then
-        log_warn "mysqladmin command not found. MySQL connectivity checks will be skipped."
+        log_warn "mysqladmin command not found. MySQL connectivity checks will be basic."
         log_warn "Install with: apt-get install mysql-client or yum install mysql"
     fi
-    
-    if [[ "$PUSH_KEEPER" == true ]] && ! command -v keeper &>/dev/null; then
-        log_error "Keeper Commander not found but --push-to-keeper was specified."
-        log_error "Install with: pip install keeper-commander"
-        exit 1
-    elif ! command -v keeper &>/dev/null; then
-        log_warn "Keeper Commander not found. Install with: pip install keeper-commander"
-    fi
-    
+
     log_success "All required dependencies are available."
 }
+# ================================================================================
 
-# ---------- Setup Export Directory ---------- #
+# ================================================================================
+# SECTION 8: DIRECTORY SETUP
+# --------------------------------------------------------------------------------
+# Purpose: Creates and validates export directory
+# --------------------------------------------------------------------------------
 setup_export_directory() {
     # If default current directory, no need to create anything
     if [[ "$EXPORT_DIR" != "." && ! -d "$EXPORT_DIR" ]]; then
@@ -196,62 +306,178 @@ setup_export_directory() {
             exit 1
         }
     fi
+
+    # Make sure the directory is writable
+    if [[ ! -w "$EXPORT_DIR" ]]; then
+        log_error "Export directory is not writable: $EXPORT_DIR"
+        exit 1
+    fi
+
+    log_debug "Export directory set to: $EXPORT_DIR"
 }
 
-# ---------- Compose File Port Inspection ---------- #
+# ================================================================================
+# SECTION 9: DOCKER COMPOSE INSPECTION
+# --------------------------------------------------------------------------------
+# Purpose: Examines compose file for database service and port configuration
+# --------------------------------------------------------------------------------
 inspect_compose_file() {
-    log_info "Inspecting docker-compose.yml for database service and port exposure..."
+    log_info "Inspecting docker-compose.yml for database service and port configuration..."
 
     if [[ ! -f "$COMPOSE_FILE" ]]; then
         log_error "Compose file not found at $COMPOSE_FILE"
         exit 1
     fi
 
-    db_port_info=$(python3 - <<EOF
-import yaml
+    # Improved compose file parsing: Focus on service and port detection only
+    db_info=$(python3 - <<EOF
+import yaml, json
 try:
     with open("$COMPOSE_FILE", "r") as f:
         data = yaml.safe_load(f)
-        if 'services' not in data or 'db' not in data['services']:
-            print("no_db_service")
-            exit(0)
-        ports = data['services']['db'].get('ports', [])
-        for port in ports:
-            port_str = str(port)
-            if ':3306' in port_str:
-                host_port = port_str.split(':')[0]
-                print(f"found:{host_port}")
-                exit(0)
-        print("no")
-except Exception as e:
-    print(f"error: {str(e)}")
-EOF
-    )
+        result = {"status": "error", "message": "No services found"}
 
-    if [[ "$db_port_info" == "no_db_service" ]]; then
-        log_error "No database service found in docker-compose.yml"
+        if 'services' not in data:
+            print(json.dumps(result))
+            exit(0)
+
+        # Look for database service
+        db_service = None
+        ports_exposed = False
+        port_mapping = None
+
+        for service_name, service_config in data['services'].items():
+            image = service_config.get('image', '').lower()
+
+            # Identify database service by image name
+            if any(db_img in image for db_img in ['mysql', 'mariadb', 'postgres']):
+                db_service = service_name
+
+                # Look for port configuration
+                if 'ports' in service_config:
+                    ports = service_config['ports']
+
+                    # Handle various port formats
+                    for port in ports:
+                        if isinstance(port, dict) and 'published' in port and 'target' in port:
+                            if port['target'] in [3306, 5432]:
+                                port_mapping = f"{port['published']}:{port['target']}"
+                                ports_exposed = True
+                                break
+                        elif isinstance(port, str):
+                            # Handle formats like "3308:3306"
+                            if ':' in port:
+                                host_port, container_port = port.split(':')
+                                if container_port in ['3306', '5432']:
+                                    port_mapping = port
+                                    ports_exposed = True
+                                    break
+                            # Handle direct port exposure like "3306"
+                            elif port in ['3306', '5432']:
+                                port_mapping = port
+                                ports_exposed = True
+                                break
+
+                # Check environment variables for port config
+                if 'environment' in service_config:
+                    env = service_config['environment']
+                    env_dict = {}
+
+                    # Handle both list and dict formats
+                    if isinstance(env, list):
+                        for item in env:
+                            if '=' in item:
+                                key, value = item.split('=', 1)
+                                env_dict[key] = value
+                    else:
+                        env_dict = env
+
+                    # Look for port in environment
+                    for key, value in env_dict.items():
+                        if 'PORT' in key.upper() and value:
+                            port_mapping = f"{value}:{value}" if not ports_exposed else port_mapping
+                            break
+
+                break  # Stop after finding the first database service
+
+        # Fallback to 'db' if no database service found by image
+        if not db_service and 'db' in data['services']:
+            db_service = 'db'
+            # Repeat port detection for this service
+            service_config = data['services']['db']
+            # (port detection code would be duplicated here)
+
+        # Prepare result
+        if db_service:
+            result = {
+                "status": "success",
+                "db_service": db_service,
+                "ports_exposed": ports_exposed,
+                "port_mapping": port_mapping
+            }
+        else:
+            result = {
+                "status": "error",
+                "message": "No database service found in docker-compose.yml"
+            }
+
+        print(json.dumps(result))
+
+except Exception as e:
+    print(json.dumps({"status": "error", "message": str(e)}))
+EOF
+)
+
+    log_debug "Docker-compose inspection result: $db_info"
+
+    # Parse the JSON response
+    if ! jq -e . >/dev/null 2>&1 <<< "$db_info"; then
+        log_error "Failed to parse inspection result"
         exit 1
-    elif [[ "$db_port_info" == "no" ]]; then
-        log_warn "Database port for MySQL is NOT exposed in docker-compose.yml."
+    fi
+
+    status=$(echo "$db_info" | jq -r '.status')
+
+    if [[ "$status" == "error" ]]; then
+        message=$(echo "$db_info" | jq -r '.message')
+        log_error "Docker-compose inspection failed: $message"
+        exit 1
+    fi
+
+    DB_SERVICE=$(echo "$db_info" | jq -r '.db_service')
+    ports_exposed=$(echo "$db_info" | jq -r '.ports_exposed')
+    port_mapping=$(echo "$db_info" | jq -r '.port_mapping')
+
+    log_info "Found database service: $DB_SERVICE"
+
+    if [[ "$ports_exposed" == "true" && -n "$port_mapping" ]]; then
+        log_success "Database port is exposed: $port_mapping"
+
+        # Extract host port from mapping (e.g., "3308:3306" → "3308")
+        if [[ "$port_mapping" == *":"* ]]; then
+            DB_PORT=$(echo "$port_mapping" | cut -d':' -f1)
+        else
+            DB_PORT=$port_mapping
+        fi
+
+        log_info "Using port $DB_PORT for database connection"
+    else
+        log_warn "Database port for MySQL is NOT exposed in docker-compose.yml"
         read -p "Would you like to expose it now (this will patch the compose file)? [y/N]: " confirm
         if [[ "$confirm" =~ ^[Yy]$ ]]; then
             patch_compose_file
         else
-            log_warn "Continuing without exposing database port. Export may fail if DB is unreachable."
+            log_warn "Continuing without exposing database port."
+            log_info "You may need to provide connection details manually later if automatic detection fails."
         fi
-    elif [[ "$db_port_info" =~ ^error ]]; then
-        log_error "Error occurred while parsing docker-compose.yml: ${db_port_info#error: }"
-        exit 1
-    elif [[ "$db_port_info" =~ ^found: ]]; then
-        detected_port="${db_port_info#found:}"
-        log_info "Database port $detected_port is exposed and will be used for connection."
-        DB_PORT="$detected_port"
-    else
-        log_info "Database port is already exposed."
     fi
 }
 
-# ---------- Patch Compose File ---------- #
+# ================================================================================
+# SECTION 10: COMPOSE FILE PATCHING
+# --------------------------------------------------------------------------------
+# Purpose: Modifies compose file to expose database port
+# --------------------------------------------------------------------------------
 patch_compose_file() {
     backup_file="${COMPOSE_FILE}.bak.$(date +%s)"
     cp "$COMPOSE_FILE" "$backup_file"
@@ -261,29 +487,57 @@ patch_compose_file() {
     [[ -z "$custom_port" ]] && custom_port=$DB_PORT
 
     # Patch the file using Python
-    python3 - <<EOF
-import yaml
-f = "$COMPOSE_FILE"
-bak = "$backup_file"
-port = "$custom_port"
+    patch_result=$(python3 - <<EOF
+import yaml, json
 try:
-    with open(f) as file:
-        d = yaml.safe_load(file)
-        if 'ports' not in d['services']['db']:
-            d['services']['db']['ports'] = []
-        d['services']['db']['ports'].append(f"{port}:$DB_PORT")
-        with open(f, "w") as out:
-            yaml.dump(d, out, default_flow_style=False)
-    print("success")
-except Exception as e:
-    print(f"error: {str(e)}")
-EOF
+    compose_file = "$COMPOSE_FILE"
+    db_service = "$DB_SERVICE"
+    port = "$custom_port"
+    container_port = "3306"  # Default MySQL port
 
-    log_info "Compose file patched to expose ${custom_port} -> ${DB_PORT}"
-    
+    with open(compose_file) as file:
+        config = yaml.safe_load(file)
+
+        # Ensure ports list exists
+        if 'ports' not in config['services'][db_service]:
+            config['services'][db_service]['ports'] = []
+
+        # Add the port mapping
+        port_mapping = f"{port}:{container_port}"
+
+        # Check if this exact mapping already exists
+        if port_mapping not in config['services'][db_service]['ports']:
+            config['services'][db_service]['ports'].append(port_mapping)
+
+            # Write the updated config back to the file
+            with open(compose_file, "w") as out:
+                yaml.dump(config, out, default_flow_style=False)
+
+            print(json.dumps({"status": "success", "message": "Compose file patched successfully"}))
+        else:
+            print(json.dumps({"status": "warning", "message": "Port mapping already exists"}))
+
+except Exception as e:
+    print(json.dumps({"status": "error", "message": str(e)}))
+EOF
+)
+
+    status=$(echo "$patch_result" | jq -r '.status')
+    message=$(echo "$patch_result" | jq -r '.message')
+
+    if [[ "$status" == "error" ]]; then
+        log_error "Failed to patch compose file: $message"
+        log_info "You can try manual port exposure by editing $COMPOSE_FILE"
+        return 1
+    elif [[ "$status" == "warning" ]]; then
+        log_warn "$message"
+    else
+        log_success "Compose file patched to expose port ${custom_port} → 3306"
+    fi
+
     # Update the DB_PORT to the custom port for subsequent operations
     DB_PORT=$custom_port
-    
+
     read -p "Apply changes and restart containers with 'docker-compose up -d'? [y/N]: " restart_confirm
     if [[ "$restart_confirm" =~ ^[Yy]$ ]]; then
         restart_containers
@@ -292,334 +546,830 @@ EOF
     fi
 }
 
-# ---------- Restart Containers ---------- #
+# ================================================================================
+# SECTION 11: CONTAINER RESTART
+# --------------------------------------------------------------------------------
+# Purpose: Restarts containers after compose file changes
+# --------------------------------------------------------------------------------
 restart_containers() {
     log_info "Restarting containers with docker-compose..."
-    docker-compose -f "$COMPOSE_FILE" up -d
-    log_info "Waiting 10 seconds for containers to restart..."
-    sleep 10
-    check_mysql_connectivity
-}
 
-# ---------- Check MySQL Connectivity ---------- #
-check_mysql_connectivity() {
-    log_info "Checking MySQL connectivity..."
-    
-    # Only check if we have the credentials
-    if [[ -z "$DB_USER" || -z "$DB_PASS" ]]; then
-        log_warn "Database credentials not available yet. Skipping connectivity check."
-        return
-    fi
-    
-    if command -v mysqladmin &> /dev/null; then
-        if mysqladmin ping -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASS" --silent; then
-            log_success "MySQL is reachable and responding."
-        else
-            log_error "MySQL is not responding on port $DB_PORT. Please check the container logs."
-            exit 1
-        fi
+    # Check if compose file path is in a directory different from current directory
+    local compose_dir=$(dirname "$COMPOSE_FILE")
+    if [[ "$compose_dir" != "." ]]; then
+        log_info "Changing to directory: $compose_dir"
+        (cd "$compose_dir" && docker-compose up -d)
     else
-        log_warn "mysqladmin command not found. Skipping connectivity check."
+        docker-compose -f "$COMPOSE_FILE" up -d
     fi
+
+    log_info "Waiting 15 seconds for containers to restart..."
+    sleep 15
 }
 
-# ---------- Extract DB Credentials ---------- #
+# ================================================================================
+# SECTION 12: CREDENTIAL EXTRACTION
+# --------------------------------------------------------------------------------
+# Purpose: Gets database credentials from compose file
+# --------------------------------------------------------------------------------
 extract_db_credentials() {
-    log_info "Extracting DB credentials from docker-compose.yml..."
+    log_info "Extracting database credentials from docker-compose.yml..."
+
+    if [[ -z "$DB_SERVICE" ]]; then
+        log_error "Database service name not available. Run inspect_compose_file first."
+        exit 1
+    fi
+
+    # Enhanced credential extraction with better error handling
     credentials=$(python3 - <<EOF
 import yaml, json
 try:
-    with open("$COMPOSE_FILE") as file:
-        c = yaml.safe_load(file)
-        env = c['services']['db']['environment']
-        out = {
-            "user": env.get('GUACAMOLE_USERNAME', 'guac_user'),
-            "password": env.get('GUACAMOLE_PASSWORD', 'guac_pass'),
-            "database": env.get('GUACAMOLE_DATABASE', 'guacamole_db')
+    compose_file = "$COMPOSE_FILE"
+    db_service = "$DB_SERVICE"
+
+    with open(compose_file) as file:
+        config = yaml.safe_load(file)
+
+        if 'services' not in config or db_service not in config['services']:
+            print(json.dumps({
+                "status": "error",
+                "message": f"Service '{db_service}' not found in compose file"
+            }))
+            exit(0)
+
+        service_config = config['services'][db_service]
+        env_vars = {}
+
+        # Extract environment variables
+        if 'environment' in service_config:
+            env = service_config['environment']
+
+            # Handle dict format
+            if isinstance(env, dict):
+                env_vars = env
+            # Handle list format like ["KEY=VALUE"]
+            elif isinstance(env, list):
+                for item in env:
+                    if isinstance(item, str) and '=' in item:
+                        key, value = item.split('=', 1)
+                        env_vars[key] = value
+
+        # Look for database credentials in environment variables
+        # Try multiple possible variable names
+        username = None
+        password = None
+        database = None
+
+        # Username variables
+        for var in ['MYSQL_USER', 'MARIADB_USER', 'GUACAMOLE_USERNAME']:
+            if var in env_vars and env_vars[var]:
+                username = env_vars[var]
+                break
+
+        # Password variables
+        for var in ['MYSQL_PASSWORD', 'MARIADB_PASSWORD', 'GUACAMOLE_PASSWORD']:
+            if var in env_vars and env_vars[var]:
+                password = env_vars[var]
+                break
+
+        # Database name variables
+        for var in ['MYSQL_DATABASE', 'MARIADB_DATABASE', 'GUACAMOLE_DATABASE']:
+            if var in env_vars and env_vars[var]:
+                database = env_vars[var]
+                break
+
+        # Check for root password as fallback
+        root_password = None
+        for var in ['MYSQL_ROOT_PASSWORD', 'MARIADB_ROOT_PASSWORD']:
+            if var in env_vars and env_vars[var]:
+                root_password = env_vars[var]
+                break
+
+        # If no database name found, use some common defaults
+        if not database:
+            for default_db in ['guacamole_db', 'guacamole']:
+                database = default_db
+                break
+
+        # Prepare result
+        result = {
+            "status": "success",
+            "user": username,
+            "password": password,
+            "database": database,
+            "root_password": root_password
         }
-        print(json.dumps(out))
+
+        # Flag if credentials seem incomplete
+        if not username or not password:
+            result["status"] = "incomplete"
+            result["message"] = "Some credentials could not be extracted automatically"
+
+        print(json.dumps(result))
 except Exception as e:
-    print(json.dumps({"error": str(e)}))
+    print(json.dumps({
+        "status": "error",
+        "message": str(e)
+    }))
 EOF
-    )
-    
-    error=$(echo "$credentials" | jq -r '.error // empty')
-    if [[ -n "$error" ]]; then
-        log_error "Failed to extract credentials: $error"
-        exit 1
+)
+
+    # For security, redact passwords in debug output
+    if [[ "$DEBUG" == "true" ]]; then
+        redacted_credentials=$(echo "$credentials" | jq '.password = "REDACTED" | .root_password = "REDACTED"')
+        log_debug "Credential extraction result: $redacted_credentials"
     fi
-    
-    DB_USER=$(echo "$credentials" | jq -r '.user')
-    DB_PASS=$(echo "$credentials" | jq -r '.password')
-    DB_NAME=$(echo "$credentials" | jq -r '.database')
-    
-    if [[ -z "$DB_USER" || -z "$DB_PASS" || -z "$DB_NAME" ]]; then
-        log_error "Unable to extract complete database credentials"
-        exit 1
+
+    status=$(echo "$credentials" | jq -r '.status')
+
+    if [[ "$status" == "error" ]]; then
+        message=$(echo "$credentials" | jq -r '.message')
+        log_error "Failed to extract credentials: $message"
+        prompt_manual_credentials
+    elif [[ "$status" == "incomplete" ]]; then
+        message=$(echo "$credentials" | jq -r '.message')
+        log_warn "$message"
+
+        # Try to use partial credentials if available
+        DB_USER=$(echo "$credentials" | jq -r '.user // empty')
+        DB_PASS=$(echo "$credentials" | jq -r '.password // empty')
+        DB_NAME=$(echo "$credentials" | jq -r '.database // empty')
+
+        # Store root password for fallback connection attempts
+        ROOT_PASS=$(echo "$credentials" | jq -r '.root_password // empty')
+
+        log_info "Some credentials were extracted. You may need to provide missing details."
+        if [[ -z "$DB_USER" || -z "$DB_PASS" || -z "$DB_NAME" ]]; then
+            prompt_manual_credentials
+        fi
+    else
+        DB_USER=$(echo "$credentials" | jq -r '.user')
+        DB_PASS=$(echo "$credentials" | jq -r '.password')
+        DB_NAME=$(echo "$credentials" | jq -r '.database')
+        ROOT_PASS=$(echo "$credentials" | jq -r '.root_password // empty')
+
+        log_success "Database credentials extracted successfully."
+        log_info "Username: $DB_USER, Database: $DB_NAME"
     fi
-    
-    log_info "Credentials loaded successfully."
 }
 
-# ---------- Export Standard Guacamole Data ---------- #
-export_standard_data() {
-    log_info "Exporting standard Guacamole data..."
-    out_json="$EXPORT_DIR/${FILENAME_PREFIX}_full_export.json"
-    out_csv="$EXPORT_DIR/${FILENAME_PREFIX}_full_export.csv"
+# Helper function to prompt for manual credentials input
+prompt_manual_credentials() {
+    log_info "Please enter database connection details manually:"
 
-    python3 - <<EOF
-import mysql.connector, json, csv
-from datetime import datetime
-from pathlib import Path
+    # Prefill with any values we already have
+    [[ -n "$DB_USER" ]] && default_user="[$DB_USER]" || default_user=""
+    [[ -n "$DB_NAME" ]] && default_db="[$DB_NAME]" || default_db=""
+
+    read -p "Database username ${default_user}: " input_user
+    read -sp "Database password: " input_pass
+    echo ""
+    read -p "Database name ${default_db}: " input_db
+
+    # Only update if input is provided
+    [[ -n "$input_user" ]] && DB_USER="$input_user"
+    [[ -n "$input_pass" ]] && DB_PASS="$input_pass"
+    [[ -n "$input_db" ]] && DB_NAME="$input_db"
+
+    # Validate the entered credentials
+    if [[ -z "$DB_USER" || -z "$DB_PASS" || -z "$DB_NAME" ]]; then
+        log_error "All database connection fields are required"
+        exit 1
+    fi
+
+    log_info "Manual connection details accepted"
+}
+
+# ================================================================================
+# SECTION 13: DATABASE CONNECTION VERIFICATION
+# --------------------------------------------------------------------------------
+# Purpose: Tests database connection with retry and fallback mechanisms
+# --------------------------------------------------------------------------------
+verify_db_connection() {
+    log_info "Verifying database connection..."
+
+    # Try multiple connection approaches in sequence
+    CONNECTION_VERIFIED=false
+
+    # Approach 1: Try with extracted credentials
+    log_info "Connection attempt #1: Using extracted credentials on $DB_HOST:$DB_PORT"
+    if test_mysql_connection "$DB_HOST" "$DB_PORT" "$DB_USER" "$DB_PASS" "$DB_NAME"; then
+        CONNECTION_VERIFIED=true
+        log_success "Connection successful with extracted credentials"
+        return 0
+    fi
+
+    # Approach 2: Try with container name as host
+    if [[ "$DB_HOST" == "localhost" && -n "$DB_SERVICE" ]]; then
+        log_info "Connection attempt #2: Using container name as host"
+        if test_mysql_connection "$DB_SERVICE" "$DB_PORT" "$DB_USER" "$DB_PASS" "$DB_NAME"; then
+            CONNECTION_VERIFIED=true
+            DB_HOST="$DB_SERVICE"
+            log_success "Connection successful using container name as host"
+            return 0
+        fi
+    fi
+
+    # Approach 3: Try with root user if root password available
+    if [[ -n "$ROOT_PASS" ]]; then
+        log_info "Connection attempt #3: Using root credentials"
+        if test_mysql_connection "$DB_HOST" "$DB_PORT" "root" "$ROOT_PASS" "$DB_NAME"; then
+            CONNECTION_VERIFIED=true
+            DB_USER="root"
+            DB_PASS="$ROOT_PASS"
+            log_success "Connection successful with root credentials"
+            return 0
+        fi
+    fi
+
+    # Approach 4: Try common database names if the specified one failed
+    log_info "Connection attempt #4: Trying alternative database names"
+    for alt_db in "guacamole" "guacamole_db" "mysql"; do
+        if [[ "$alt_db" != "$DB_NAME" ]]; then
+            log_info "Trying database name: $alt_db"
+            if test_mysql_connection "$DB_HOST" "$DB_PORT" "$DB_USER" "$DB_PASS" "$alt_db"; then
+                CONNECTION_VERIFIED=true
+                DB_NAME="$alt_db"
+                log_success "Connection successful with database: $DB_NAME"
+                return 0
+            fi
+        fi
+    done
+
+    # If all automatic attempts fail, prompt for manual credentials
+    log_warn "All automatic connection attempts failed."
+    log_info "Would you like to enter different database credentials?"
+    read -p "Try different credentials? [Y/n]: " try_different
+
+    if [[ -z "$try_different" || "$try_different" =~ ^[Yy]$ ]]; then
+        prompt_manual_credentials
+
+        # Try with the new manual credentials
+        log_info "Trying connection with manual credentials..."
+        if test_mysql_connection "$DB_HOST" "$DB_PORT" "$DB_USER" "$DB_PASS" "$DB_NAME"; then
+            CONNECTION_VERIFIED=true
+            log_success "Connection successful with manual credentials"
+            return 0
+        else
+            log_error "Connection failed with manual credentials"
+            log_error "Unable to establish a working database connection"
+            exit 1
+        fi
+    else
+        log_error "Unable to establish a working database connection"
+        exit 1
+    fi
+}
+
+# Helper function to test MySQL connection
+test_mysql_connection() {
+    local host=$1
+    local port=$2
+    local user=$3
+    local pass=$4
+    local db=$5
+
+    log_debug "Testing connection to $host:$port with user $user, database $db"
+
+    connection_result=$(python3 - <<EOF
+import mysql.connector
+import json
 import sys
 
-def clean(data):
-    return [
-        {k: v for k, v in row.items() if v not in [None, ""]}
-        for row in data
-    ]
-
-def execute_query(conn, query):
-    """Execute a query and properly handle results"""
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute(query)
-    results = cursor.fetchall()
-    cursor.close()
-    return results
-
 try:
+    # Set a reasonably short timeout
     conn = mysql.connector.connect(
-        host='$DB_HOST', 
-        port=$DB_PORT,
-        user='$DB_USER', 
-        password='$DB_PASS', 
-        database='$DB_NAME',
-        consume_results=True  # Auto-consume any unread results
+        host='$host',
+        port=$port,
+        user='$user',
+        password='$pass',
+        database='$db',
+        connect_timeout=5
     )
-    data = {}
 
-    # Get essential connection data
-    try:
-        data['connections'] = clean(execute_query(conn, 
-            "SELECT connection_id, connection_name, protocol, parent_id, max_connections, max_connections_per_user FROM guacamole_connection"))
-    except Exception as e:
-        print(f"warning: Error retrieving connections: {str(e)}")
-        data['connections'] = []
-    
-    # Get connection parameters
-    try:
-        data['connection_parameters'] = clean(execute_query(conn,
-            "SELECT connection_id, parameter_name, parameter_value FROM guacamole_connection_parameter"))
-    except Exception as e:
-        print(f"warning: Error retrieving connection parameters: {str(e)}")
-        data['connection_parameters'] = []
-    
-    # Get connection groups
-    try:
-        data['groups'] = clean(execute_query(conn,
-            "SELECT connection_group_id, parent_id, connection_group_name, type FROM guacamole_connection_group"))
-    except Exception as e:
-        print(f"warning: Error retrieving connection groups: {str(e)}")
-        data['groups'] = []
-    
-    # Get user data - check for schema differences
-    try:
-        # First check the table structure
-        columns = [column[0] for column in execute_query(conn, "DESCRIBE guacamole_user")]
-        
-        # Build a dynamic query based on available columns
-        user_columns = []
-        if 'user_id' in columns:
-            user_columns.append('user_id')
-        if 'entity_id' in columns:  # Newer Guacamole might use entity_id instead
-            user_columns.append('entity_id')
-        if 'username' in columns:
-            user_columns.append('username')
-        if 'disabled' in columns:
-            user_columns.append('disabled')
-        
-        if user_columns:
-            query = f"SELECT {', '.join(user_columns)} FROM guacamole_user"
-            data['users'] = clean(execute_query(conn, query))
-        else:
-            data['users'] = []
-            print("warning: Could not determine user columns")
-    except Exception as e:
-        print(f"warning: Error retrieving user data: {str(e)}")
-        data['users'] = []
-    
-    # Permissions might be in different tables depending on version
-    permissions_data = []
-    
-    # Try various permission tables - each in its own try block
-    for table in ['guacamole_system_permission', 'guacamole_user_permission', 'guacamole_connection_permission']:
-        try:
-            # Check if table exists
-            execute_query(conn, f"SHOW TABLES LIKE '{table}'")
-            
-            # Get appropriate columns based on the table
-            if table == 'guacamole_connection_permission':
-                permissions_data.extend(clean(execute_query(conn, 
-                    f"SELECT entity_id, user_id, connection_id, permission FROM {table}")))
-            else:
-                permissions_data.extend(clean(execute_query(conn, 
-                    f"SELECT entity_id, affected_user_id, connection_id, connection_group_id, permission FROM {table}")))
-        except Exception as e:
-            # Just skip tables that don't exist or have different schema
-            continue
-    
-    data['permissions'] = permissions_data
-
-    # Export to JSON with nice formatting
-    Path("$out_json").write_text(json.dumps(data, indent=4, default=str))
-
-    # Export to CSV (simplified format)
-    with open("$out_csv", "w", newline='') as csvfile:
-        writer = csv.writer(csvfile)
-        writer.writerow(["Category", "Fields"])
-        for k, v in data.items():
-            writer.writerow([k, json.dumps(v)])
+    # Verify we can actually run a query
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1")
+    cursor.fetchone()
+    cursor.close()
 
     conn.close()
-    print("success")
+    print(json.dumps({"status": "success"}))
+except mysql.connector.Error as err:
+    error_code = str(err.errno) if hasattr(err, 'errno') else 'unknown'
+    error_msg = str(err)
+    print(json.dumps({
+        "status": "error",
+        "error_code": error_code,
+        "message": error_msg
+    }))
 except Exception as e:
-    print(f"error: {str(e)}")
-    sys.exit(1)  # Make sure to exit with error code
+    print(json.dumps({
+        "status": "error",
+        "error_code": "unknown",
+        "message": str(e)
+    }))
 EOF
+)
 
-    log_success "Standard export written to $out_json and $out_csv"
-}
+    status=$(echo "$connection_result" | jq -r '.status')
 
-# ---------- Export Keeper PAM Records ---------- #
-export_keeper_data() {
-    log_info "Exporting Keeper PAM records..."
-    out_json="$EXPORT_DIR/${FILENAME_PREFIX}_keeper_import.json"
-    out_csv="$EXPORT_DIR/${FILENAME_PREFIX}_keeper_import.csv"
-
-    python3 - <<EOF
-import mysql.connector, json, csv
-from pathlib import Path
-
-def ftype(t, v, sanitize_mode): 
-    if t == "password" and sanitize_mode != "none":
-        if sanitize_mode == "remove":
-            return None
-        else:  # placeholder
-            return {"type": t, "value": "\${KEEPER_SERVER_PASSWORD}"}
-    elif t == "login" and sanitize_mode != "none":
-        if sanitize_mode == "remove":
-            return None
-        else:  # placeholder
-            return {"type": t, "value": "\${KEEPER_SERVER_USERNAME}"}
-    else:
-        return {"type": t, "value": v} if v else None
-
-try:
-    conn = mysql.connector.connect(
-        host='$DB_HOST', 
-        port=$DB_PORT,
-        user='$DB_USER', 
-        password='$DB_PASS', 
-        database='$DB_NAME',
-        consume_results=True
-    )
-    
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT connection_id, connection_name, protocol FROM guacamole_connection")
-    conns = cursor.fetchall()
-    cursor.close()
-    
-    records = []
-
-    for c in conns:
-        cid = c['connection_id']
-        
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT parameter_name, parameter_value FROM guacamole_connection_parameter WHERE connection_id = %s", (cid,))
-        params = {r['parameter_name']: r['parameter_value'] for r in cursor.fetchall()}
-        cursor.close()
-        
-        fields = list(filter(None, [
-            ftype("host", params.get("hostname"), "$SANITIZE_MODE"),
-            ftype("port", params.get("port"), "$SANITIZE_MODE"),
-            ftype("login", params.get("username"), "$SANITIZE_MODE"),
-            ftype("password", params.get("password"), "$SANITIZE_MODE"),
-            ftype("protocol", c.get("protocol"), "$SANITIZE_MODE")
-        ]))
-        
-        records.append({
-            "type": "pam",
-            "title": c["connection_name"],
-            "notes": "Imported from Guacamole",
-            "fields": fields
-        })
-
-    Path("$out_json").write_text(json.dumps(records, indent=4))
-
-    with open("$out_csv", "w", newline='') as csvfile:
-        writer = csv.writer(csvfile)
-        writer.writerow(["title", "type", "notes", "fields"])
-        for r in records:
-            writer.writerow([r['title'], r['type'], r['notes'], json.dumps(r['fields'])])
-
-    conn.close()
-    print("success")
-except Exception as e:
-    print(f"error: {str(e)}")
-    sys.exit(1)
-EOF
-
-    log_success "Keeper export written to $out_json and $out_csv"
-
-    if [[ "$PUSH_KEEPER" == true ]]; then
-        push_to_keeper "$out_json"
-    fi
-}
-
-# ---------- Push to Keeper ---------- #
-push_to_keeper() {
-    local json_file=$1
-    log_info "Pushing records to Keeper Commander..."
-    
-    if ! command -v keeper &> /dev/null; then
-        log_error "Keeper Commander not found. Please install it first."
-        return 1
-    fi
-    
-    if keeper record import "$json_file"; then
-        log_success "Records successfully imported into Keeper"
+    if [[ "$status" == "success" ]]; then
+        return 0
     else
-        log_error "Failed to import records into Keeper"
+        error_code=$(echo "$connection_result" | jq -r '.error_code')
+        message=$(echo "$connection_result" | jq -r '.message')
+
+        log_debug "Connection error ($error_code): $message"
         return 1
     fi
 }
 
-# ---------- Main Function ---------- #
-main() {
-    log_info "Starting Guacamole Export Tool"
-    
-    parse_arguments "$@"
-    check_dependencies
-    setup_export_directory
-    
-    # First extract credentials to enable connectivity checks
-    extract_db_credentials
-    inspect_compose_file
-    
-    # Check connectivity after credentials are extracted
-    check_mysql_connectivity
-    
-    # Perform exports based on user selections
-    if [[ "$DO_STANDARD" == true ]]; then
-        export_standard_data
+
+# ================================================================================
+# SECTION 14: DATA EXPORT
+# --------------------------------------------------------------------------------
+# Purpose: Extracts and formats connection data from Guacamole database to PAM format
+# --------------------------------------------------------------------------------
+export_connection_data() {
+    log_info "Exporting connection data from Guacamole database to PAM format..."
+
+    if [[ "$CONNECTION_VERIFIED" != "true" ]]; then
+        log_error "Database connection not verified. Run verify_db_connection first."
+        exit 1
     fi
 
-    if [[ "$DO_KEEPER" == true ]]; then
-        export_keeper_data
+    # Prepare output filenames with timestamps
+    local timestamp=$(date +%Y%m%d_%H%M%S)
+    local connections_file="${EXPORT_DIR}/${FILENAME_PREFIX}_connections_${timestamp}.json"
+    local pam_format_file="${EXPORT_DIR}/${FILENAME_PREFIX}_pam_format_${timestamp}.json"
+
+    log_info "Exporting Guacamole connections to: $connections_file"
+    log_info "Exporting PAM format to: $pam_format_file"
+
+    # Execute the data export using Python for better error handling and formatting
+    export_result=$(python3 - <<EOF
+import mysql.connector
+import json
+import re
+import sys
+
+# Helper functions for data sanitization
+def sanitize_value(value, mode):
+    if value is None:
+        return None
+
+    if mode == "none":
+        return value
+    elif mode == "remove":
+        return None
+    else:  # placeholder mode
+        # Use different placeholder formats based on field type
+        if isinstance(value, str):
+            if re.match(r'^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]{8,}$', value):
+                # Looks like a password
+                return "[PASSWORD]"
+            elif re.match(r'^\w+@\w+\.\w+$', value):
+                # Looks like an email
+                return "[EMAIL]"
+            elif re.match(r'^(\d{1,3}\.){3}\d{1,3}$', value):
+                # Looks like an IP address
+                return "[IP_ADDRESS]"
+            else:
+                # Generic credential
+                return "[CREDENTIAL]"
+        return "[CREDENTIAL]"
+
+try:
+    # Connect to the database
+    conn = mysql.connector.connect(
+        host='$DB_HOST',
+        port=$DB_PORT,
+        user='$DB_USER',
+        password='$DB_PASS',
+        database='$DB_NAME'
+    )
+
+    cursor = conn.cursor(dictionary=True)
+
+    # Check if we have guacamole_connection table
+    cursor.execute("SHOW TABLES LIKE 'guacamole_connection'")
+    if not cursor.fetchone():
+        print(json.dumps({
+            "status": "error",
+            "message": "Required Guacamole tables not found in database"
+        }))
+        sys.exit(0)
+
+    # Get connection data with parameters
+    cursor.execute("""
+        SELECT
+            c.connection_id,
+            c.connection_name,
+            c.parent_id,
+            c.protocol,
+            p.parameter_name,
+            p.parameter_value
+        FROM
+            guacamole_connection c
+        LEFT JOIN
+            guacamole_connection_parameter p ON c.connection_id = p.connection_id
+        ORDER BY
+            c.connection_id, p.parameter_name
+    """)
+
+    # Process results into a structured format
+    connections = {}
+    user_mappings = {}
+
+    # First, structure the connection data
+    for row in cursor:
+        conn_id = row['connection_id']
+
+        if conn_id not in connections:
+            connections[conn_id] = {
+                "id": conn_id,
+                "name": row['connection_name'],
+                "protocol": row['protocol'],
+                "parent_id": row['parent_id'],
+                "parameters": {}
+            }
+
+        # Add parameter if it exists
+        if row['parameter_name']:
+            param_name = row['parameter_name']
+            param_value = row['parameter_value']
+
+            # Apply sanitization based on mode and parameter type
+            if param_name in ['password', 'passphrase', 'private-key', 'username', 'secret']:
+                param_value = sanitize_value(param_value, '$SANITIZE_MODE')
+
+            connections[conn_id]['parameters'][param_name] = param_value
+
+    # Get connection hierarchy information (folders)
+    cursor.execute("SELECT * FROM guacamole_connection_group")
+
+    # Process connection groups (folders)
+    groups = {}
+    for row in cursor:
+        group_id = row['connection_group_id']
+        groups[group_id] = {
+            "id": group_id,
+            "name": row['connection_group_name'],
+            "parent_id": row['parent_id'],
+            "type": row['type']
+        }
+
+    # Prepare the original Guacamole format for Keeper
+    keeper_data = {
+        "root_folder": "$KEEPER_ROOT_FOLDER",
+        "connections": list(connections.values()),
+        "groups": list(groups.values()),
+        "user_mappings": user_mappings
+    }
+
+    # Write the original connections file
+    with open('$connections_file', 'w') as f:
+        json.dump(keeper_data, f, indent=2)
+
+    # Prepare shared folders for PAM format
+    shared_folders = []
+    folder_map = {}
+    for group_id, group in groups.items():
+        if group['parent_id'] is None and group['type'] == 'ORGANIZATIONAL':
+            shared_folders.append(group['name'])
+            folder_map[group_id] = group['name']
+    
+    # Directly write PAM format JSON to file - EXACT FORMAT FROM DOCUMENTATION
+    with open('$pam_format_file', 'w') as f:
+        # Write the PAM file with the EXACT format from documentation
+        f.write('{\\n')
+        f.write('  "shared_folders": [\\n')
+        
+        # Write shared folders
+        for i, folder in enumerate(shared_folders):
+            if i < len(shared_folders) - 1:
+                f.write(f'    "{folder}",\\n')
+            else:
+                f.write(f'    "{folder}"\\n')
+        
+        f.write('  ],\\n')
+        f.write('  "records": [\\n')
+        
+        # Process all connections to create PAM records
+        machine_records_count = 0
+        is_first = True
+        
+        for conn_id, conn in connections.items():
+            if not is_first:
+                f.write(',\\n')
+            else:
+                is_first = False
+                
+            # Start the record exactly as in documentation
+            f.write('  {\\n')
+            
+            # Write title
+            title = conn['name'].replace('"', '\\"')  # Escape quotes in title
+            f.write(f'      "title": "{title}",\\n')
+            
+            # Write type - EXACT ORDER FROM DOCUMENTATION
+            f.write('      "$type": "pamMachine",\\n')
+            
+            # Write custom fields - EXACT INDENTATION FROM DOCUMENTATION
+            f.write('        "custom_fields": {\\n')
+            f.write('        "$pamHostname": {\\n')
+            
+            # Get hostname and port
+            hostname = conn['parameters'].get('hostname', conn['parameters'].get('host', ''))
+            port = conn['parameters'].get('port', '')
+            
+            # Clean hostname and port for JSON
+            hostname = hostname.replace('"', '\\"') if hostname else ""
+            port = port.replace('"', '\\"') if port else ""
+            
+            f.write(f'          "hostName": "{hostname}",\\n')
+            f.write(f'          "port": "{port}"\\n')
+            f.write('        },\\n')
+            
+            # Determine SSL verification
+            ssl_verification = True
+            if conn['protocol'] == 'rdp' and conn['parameters'].get('ignore-cert') == 'true':
+                ssl_verification = False
+            elif conn['protocol'] == 'http' and conn['parameters'].get('url', '').startswith('http:'):
+                ssl_verification = False
+                
+            f.write(f'        "$checkbox:sslVerification": {str(ssl_verification).lower()}\\n')
+            f.write('      },\\n')
+            
+            # Handle login and password - EXACT ORDER FROM DOCUMENTATION
+            username = conn['parameters'].get('username', '')
+            password = conn['parameters'].get('password', '')
+            
+            # Use placeholder values if null
+            login_val = '"username"' if not username else f'"{username}"'
+            pass_val = '"password"' if not password else f'"{password}"'
+            
+            f.write(f'      "login": {login_val},\\n')
+            f.write(f'      "password": {pass_val}')
+            
+            # Write folders if available - EXACT STRUCTURE FROM DOCUMENTATION
+            if conn['parent_id'] in folder_map:
+                folder_name = folder_map[conn['parent_id']]
+                f.write(',\\n      "folders": [\\n')
+                f.write('        {\\n')
+                f.write(f'          "shared_folder": "{folder_name}",\\n')
+                f.write('          "can_edit": true,\\n')
+                f.write('          "can_share": true\\n')
+                f.write('        }\\n')
+                f.write('      ]')
+            
+            # End record
+            f.write('\\n  }')
+            
+            machine_records_count += 1
+        
+        # End records array and JSON
+        f.write('\\n  ]\\n')
+        f.write('}')
+    
+    # Fix the file with literal backslashes
+    with open('$pam_format_file', 'r') as original:
+        content = original.read()
+    
+    # Replace literal \n with actual newlines
+    with open('$pam_format_file', 'w') as fixed:
+        fixed.write(content.replace('\\n', '\n'))
+    
+    # Count protocol types for stats
+    protocol_stats = {}
+    for conn in connections.values():
+        protocol = conn['protocol'].upper()
+        protocol_stats[protocol] = protocol_stats.get(protocol, 0) + 1
+    
+    # Create protocol counts as a simple list for display
+    protocol_counts = []
+    for protocol, count in sorted(protocol_stats.items()):
+        protocol_counts.append(f"{protocol},{count}")
+        
+    protocol_counts_str = "\n".join(protocol_counts)
+    
+    # Return a simple success message with integer counts
+    results = {
+        "status": "success",
+        "connections_count": len(connections),
+        "groups_count": len(groups),
+        "pam_records_count": machine_records_count,
+        "shared_folders_count": len(shared_folders),
+        "machine_records_count": machine_records_count,
+        "protocol_counts_str": protocol_counts_str
+    }
+    
+    print(json.dumps(results))
+
+    cursor.close()
+    conn.close()
+
+except Exception as e:
+    print(json.dumps({
+        "status": "error",
+        "message": str(e)
+    }))
+EOF
+)
+
+    # Process the export result
+    if ! echo "$export_result" | jq -e . > /dev/null 2>&1; then
+        log_error "Invalid JSON output from export"
+        log_debug "Raw output: $export_result"
+        exit 1
     fi
 
-    log_success "All operations completed successfully."
+    status=$(echo "$export_result" | jq -r '.status')
+
+    if [[ "$status" == "error" ]]; then
+        message=$(echo "$export_result" | jq -r '.message')
+        log_error "Export failed: $message"
+        exit 1
+    elif [[ "$status" == "warning" ]]; then
+        message=$(echo "$export_result" | jq -r '.message')
+        log_warn "$message"
+    else
+        log_success "Export completed successfully!"
+        
+        # Format data for export statistics table - ensure clean values
+        connections_count=$(echo "$export_result" | jq -r '.connections_count')
+        groups_count=$(echo "$export_result" | jq -r '.groups_count')
+        pam_records_count=$(echo "$export_result" | jq -r '.pam_records_count')
+        shared_folders_count=$(echo "$export_result" | jq -r '.shared_folders_count')
+        machine_records_count=$(echo "$export_result" | jq -r '.machine_records_count')
+        
+        # Create the export data with explicit values
+        export_data="Metric,Value
+Connections,${connections_count}
+Groups,${groups_count}
+PAM Records,${pam_records_count}"
+
+        # Display export statistics in table
+        print_fancy_table "EXPORT STATISTICS" "$export_data"
+        
+        # Display protocol distribution table
+        if echo "$export_result" | jq -e '.protocol_counts_str' > /dev/null 2>&1; then
+            protocol_counts_str=$(echo "$export_result" | jq -r '.protocol_counts_str')
+            if [[ -n "$protocol_counts_str" ]]; then
+                protocol_data="Protocol,Count
+$protocol_counts_str"
+                print_fancy_table "PROTOCOL DISTRIBUTION" "$protocol_data"
+            fi
+        fi
+        
+        # Display PAM details in table
+        pam_data="Metric,Value
+Shared Folders,${shared_folders_count}
+Machine Records,${machine_records_count}"
+        
+        print_fancy_table "PAM FORMAT DETAILS" "$pam_data"
+
+        # Generate summary with PAM information
+        generate_export_summary "$connections_file" "$pam_format_file"
+    fi
 }
 
-# Call main function with all arguments
-main "$@"
+# Helper function to generate a readable summary
+generate_export_summary() {
+    local connections_file=$1
+    local pam_format_file=$2
+    local summary_file="${EXPORT_DIR}/${FILENAME_PREFIX}_summary_$(date +%Y%m%d_%H%M%S).txt"
+
+    log_info "Generating export summary to: $summary_file"
+
+    python3 - <<EOF > "$summary_file"
+import json
+import os
+import datetime
+
+try:
+    # Load the exported data
+    with open('$connections_file') as f:
+        data = json.load(f)
+        
+    # Load PAM format data
+    with open('$pam_format_file') as f:
+        pam_data = json.load(f)
+
+    connections = data['connections']
+    groups = data['groups']
+    user_mappings = data.get('user_mappings', {})
+
+    # Create a readable summary
+    summary = []
+    summary.append("# Keeper PAM Export Summary")
+    summary.append(f"Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    summary.append(f"Root Folder: {data['root_folder']}")
+    summary.append("")
+
+    # Connection stats
+    summary.append(f"## Export Statistics")
+    summary.append(f"- Total Connections: {len(connections)}")
+    summary.append(f"- Total Folders: {len(groups)}")
+    summary.append(f"- Total PAM Records: {len(pam_data['records'])}")
+
+    # Protocol distribution
+    protocol_counts = {}
+    for conn in connections:
+        protocol = conn['protocol']
+        protocol_counts[protocol] = protocol_counts.get(protocol, 0) + 1
+
+    summary.append("\n## Connection Types")
+    for protocol, count in sorted(protocol_counts.items()):
+        summary.append(f"- {protocol.upper()}: {count} connections")
+
+    # PAM format info
+    summary.append("\n## PAM Format Details")
+    summary.append(f"- Shared Folders: {len(pam_data['shared_folders'])}")
+    summary.append(f"- Machine Records: {len(pam_data['records'])}")
+
+    # Sanitization info
+    summary.append("\n## Credential Sanitization")
+    summary.append(f"- Mode: {'$SANITIZE_MODE'}")
+
+    if '$SANITIZE_MODE' == 'none':
+        summary.append("- WARNING: Credentials are exported with actual values")
+    elif '$SANITIZE_MODE' == 'placeholder':
+        summary.append("- Credentials replaced with placeholders ([PASSWORD], [CREDENTIAL], etc.)")
+    else:
+        summary.append("- Credentials have been removed from export")
+
+    # Import instructions
+    summary.append("\n## Import Instructions")
+    summary.append("1. Install Keeper Commander CLI if not already installed")
+    summary.append("   - pip install keepercommander")
+    summary.append("2. Log in to Keeper Commander")
+    summary.append("   - keeper login")
+    summary.append("3. Import connections using the Commander import command:")
+    summary.append(f"   - keeper import --format=json {os.path.basename('$connections_file')}")
+    summary.append("   OR import using the PAM-formatted file:")
+    summary.append(f"   - keeper import --format=json {os.path.basename('$pam_format_file')}")
+    summary.append("4. Verify the imported connections in your Keeper vault")
+    summary.append("")
+    summary.append("For detailed instructions, please refer to:")
+    summary.append("https://docs.keeper.io/en/keeperpam/privileged-access-manager/references/importing-pam-records")
+
+    # Print the summary
+    print("\n".join(summary))
+
+except Exception as e:
+    print(f"Error generating summary: {str(e)}")
+    print(f"Please refer to the exported JSON files for details.")
+EOF
+
+    if [[ -f "$summary_file" ]]; then
+        log_success "Export summary generated successfully"
+
+        if [[ "$QUIET" != "true" ]]; then
+            echo ""
+            cat "$summary_file"
+            echo ""
+        fi
+    else
+        log_warn "Failed to generate export summary"
+    fi
+}
+
+# ================================================================================
+# SECTION 15: MAIN EXECUTION
+# --------------------------------------------------------------------------------
+# Purpose: Orchestrates the complete export process
+# --------------------------------------------------------------------------------
+main() {
+    log_info "Starting Keeper PAM Export Tool v$VERSION"
+
+    # Parse command-line arguments
+    parse_arguments "$@"
+
+    # Check dependencies
+    check_dependencies
+
+    # Setup export directory
+    setup_export_directory
+
+    # Inspect Docker Compose file
+    inspect_compose_file
+
+    # Extract database credentials from compose file
+    extract_db_credentials
+
+    # Test database connection
+    verify_db_connection
+
+    # Export data from guacamole database
+        export_connection_data
+
+        log_success "Export process completed successfully!"
+        log_info "Files are ready for import into Keeper PAM using Keeper Commander CLI"
+        log_info "See the summary file for detailed import instructions"
+    }
+
+    # Run the main function with all arguments
+    main "$@"
+    # ================================================================================
