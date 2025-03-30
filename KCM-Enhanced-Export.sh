@@ -903,9 +903,13 @@ export_connection_data() {
     local timestamp=$(date +%Y%m%d_%H%M%S)
     local connections_file="${EXPORT_DIR}/${FILENAME_PREFIX}_connections_${timestamp}.json"
     local pam_format_file="${EXPORT_DIR}/${FILENAME_PREFIX}_pam_format_${timestamp}.json"
+    local folders_file="${EXPORT_DIR}/${FILENAME_PREFIX}_folders_${timestamp}.json"
+    local records_file="${EXPORT_DIR}/${FILENAME_PREFIX}_records_${timestamp}.json"
 
     log_info "Exporting Guacamole connections to: $connections_file"
     log_info "Exporting PAM format to: $pam_format_file"
+    log_info "Exporting folders to: $folders_file"
+    log_info "Exporting records to: $records_file"
 
     # Execute the data export using Python for better error handling and formatting
     export_result=$(python3 - <<EOF
@@ -1075,13 +1079,19 @@ try:
         
         shared_folders.append(default_folder)
     
-    # Create PAM format structure
+    # Create separate folders file
+    folders_data = {
+        "shared_folders": shared_folders
+    }
+    
+    # Create PAM format structure for complete export
     pam_format = {
         "shared_folders": shared_folders,
         "records": []
     }
     
     # Process all connections to create PAM records
+    records = []
     for conn_id, conn in connections.items():
         # Get basic connection info
         protocol = conn['protocol']
@@ -1131,16 +1141,16 @@ try:
         elif protocol == 'http' and conn['parameters'].get('url', '').startswith('http:'):
             ssl_verification = False
         
-        # Create the record structure with proper field names
+        # Create the record structure using the exact field names from Keeper's example
         record = {
-            "title": conn['name'],
-            "type": "pamMachine",
+            "title": conn['name'] if conn['name'] else "Unnamed Connection",
+            "$type": "pamMachine",
             "custom_fields": {
-                "pamHostname": {
+                "$pamHostname": {
                     "hostName": hostname if hostname else "",
                     "port": port if port else ""
                 },
-                "sslVerification": ssl_verification
+                "$checkbox:sslVerification": ssl_verification
             },
             "login": username if username else "username",
             "password": password if password else "password",
@@ -1151,24 +1161,57 @@ try:
         if conn['parent_id'] in folder_map:
             folder_obj = folder_map[conn['parent_id']]
             record["folders"].append({
-                "shared_folder": folder_obj["path"],  # Use path string, not object
+                "shared_folder": folder_obj["path"],
                 "can_edit": True,
                 "can_share": True
             })
         # If no parent folder found but we have a default folder, use it
         elif shared_folders:
             record["folders"].append({
-                "shared_folder": shared_folders[0]["path"],  # Use path string, not object
+                "shared_folder": shared_folders[0]["path"],
                 "can_edit": True,
                 "can_share": True
             })
         
-        # Add the record to the PAM format
+        # Add the record to our lists
+        records.append(record)
         pam_format["records"].append(record)
     
-    # Write the PAM format file
+    # Validate and clean up records to prevent import errors
+    for record in records:
+        # Ensure title exists
+        if not record.get("title"):
+            record["title"] = "Unnamed Connection"
+        
+        # Ensure no empty keys exist at top level
+        empty_keys = [k for k in list(record.keys()) if k == ""]
+        for k in empty_keys:
+            del record[k]
+        
+        # Ensure no empty keys in custom_fields
+        if "custom_fields" in record and isinstance(record["custom_fields"], dict):
+            empty_cf_keys = [k for k in list(record["custom_fields"].keys()) if k == ""]
+            for k in empty_cf_keys:
+                del record["custom_fields"][k]
+        
+        # Ensure folders is always a list
+        if not record.get("folders") or not isinstance(record["folders"], list):
+            record["folders"] = []
+    
+    # Create separate records file
+    records_data = {
+        "records": records
+    }
+    
+    # Write all files
     with open('$pam_format_file', 'w') as f:
         json.dump(pam_format, f, indent=2)
+        
+    with open('$folders_file', 'w') as f:
+        json.dump(folders_data, f, indent=2)
+        
+    with open('$records_file', 'w') as f:
+        json.dump(records_data, f, indent=2)
     
     # Count protocol types for stats
     protocol_stats = {}
@@ -1261,8 +1304,38 @@ Machine Records,${machine_records_count}"
         
         print_fancy_table "PAM FORMAT DETAILS" "$pam_data"
 
-        # Generate summary with PAM information
-        generate_export_summary "$connections_file" "$pam_format_file"
+        # Generate summary with PAM information - using shell variables directly
+        generate_export_summary "$connections_file" "$pam_format_file" "$folders_file" "$records_file"
+        
+        # Perform automatic import using Keeper Commander - using shell variables directly
+        log_info "Starting automatic import using Keeper Commander..."
+        
+        # Import folders first
+        log_info "Importing shared folders..."
+        if [[ -f "$folders_file" ]]; then
+            if keeper import --format=json "$folders_file"; then
+                log_success "Folders imported successfully."
+                
+                # Then import records
+                if [[ -f "$records_file" ]]; then
+                    log_info "Importing records..."
+                    if keeper import --format=json "$records_file"; then
+                        log_success "Records imported successfully."
+                        log_success "Import process completed. Please verify records in your Keeper vault."
+                    else
+                        log_error "Failed to import records. Please check Keeper Commander configuration."
+                        log_info "You can try manual import with: keeper import --format=json \"$records_file\""
+                    fi
+                else
+                    log_error "Records file not found: $records_file"
+                fi
+            else
+                log_error "Failed to import folders. Please check Keeper Commander configuration."
+                log_info "You can try manual import with: keeper import --format=json \"$folders_file\""
+            fi
+        else
+            log_error "Folders file not found: $folders_file"
+        fi
     fi
 }
 
@@ -1270,90 +1343,53 @@ Machine Records,${machine_records_count}"
 generate_export_summary() {
     local connections_file=$1
     local pam_format_file=$2
+    local folders_file=$3
+    local records_file=$4
     local summary_file="${EXPORT_DIR}/${FILENAME_PREFIX}_summary_$(date +%Y%m%d_%H%M%S).txt"
 
     log_info "Generating export summary to: $summary_file"
 
-    python3 - <<EOF > "$summary_file"
-import json
-import os
-import datetime
+    # Get base filenames for display in summary
+    local folders_basename=$(basename "$folders_file")
+    local records_basename=$(basename "$records_file")
 
-try:
-    # Load the exported data
-    with open('$connections_file') as f:
-        data = json.load(f)
-    
-    # Load PAM data
-    with open('$pam_format_file') as f:
-        pam_data = json.load(f)
-    
-    pam_records_count = len(pam_data.get('records', []))
-    pam_folders_count = len(pam_data.get('shared_folders', []))
-    machine_records_count = sum(1 for r in pam_data.get('records', []) if r.get('type') == 'pamMachine')
+    cat > "$summary_file" << EOF
+# Keeper PAM Export Summary
+Generated: $(date +"%Y-%m-%d %H:%M:%S")
+Root Folder: $KEEPER_ROOT_FOLDER
 
-    connections = data['connections']
-    groups = data['groups']
-    user_mappings = data.get('user_mappings', {})
+## Export Statistics
+- Total Connections: $(jq '.connections | length' "$connections_file")
+- Total Folders: $(jq '.groups | length' "$connections_file")
+- Total PAM Records: $(jq '.records | length' "$pam_format_file")
 
-    # Create a readable summary
-    summary = []
-    summary.append("# Keeper PAM Export Summary")
-    summary.append(f"Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    summary.append(f"Root Folder: {data['root_folder']}")
-    summary.append("")
+## PAM Format Details
+- Shared Folders: $(jq '.shared_folders | length' "$pam_format_file")
+- Machine Records: $(jq '.records | length' "$pam_format_file")
 
-    # Connection stats
-    summary.append("## Export Statistics")
-    summary.append(f"- Total Connections: {len(connections)}")
-    summary.append(f"- Total Folders: {len(groups)}")
-    summary.append(f"- Total PAM Records: {pam_records_count}")
+## Credential Sanitization
+- Mode: $SANITIZE_MODE
 
-    # Protocol distribution
-    protocol_counts = {}
-    for conn in connections:
-        protocol = conn['protocol']
-        protocol_counts[protocol] = protocol_counts.get(protocol, 0) + 1
+$(if [ "$SANITIZE_MODE" = "none" ]; then
+    echo "- WARNING: Credentials are exported with actual values"
+elif [ "$SANITIZE_MODE" = "placeholder" ]; then
+    echo "- Credentials replaced with placeholders ([PASSWORD], [CREDENTIAL], etc.)"
+else
+    echo "- Credentials have been removed from export"
+fi)
 
-    summary.append("\\n## Connection Types")
-    for protocol, count in sorted(protocol_counts.items()):
-        summary.append(f"- {protocol.upper()}: {count} connections")
+## Import Information
+The script has attempted to automatically import your data to Keeper PAM.
+If automatic import failed, you can manually import using these commands:
 
-    # PAM format info
-    summary.append("\\n## PAM Format Details")
-    summary.append(f"- Shared Folders: {pam_folders_count}")
-    summary.append(f"- Machine Records: {machine_records_count}")
+1. Import the shared folders first:
+   - keeper import --format=json $folders_basename
 
-    # Sanitization info
-    summary.append("\\n## Credential Sanitization")
-    summary.append(f"- Mode: {'$SANITIZE_MODE'}")
+2. Then import the records:
+   - keeper import --format=json $records_basename
 
-    if '$SANITIZE_MODE' == 'none':
-        summary.append("- WARNING: Credentials are exported with actual values")
-    elif '$SANITIZE_MODE' == 'placeholder':
-        summary.append("- Credentials replaced with placeholders ([PASSWORD], [CREDENTIAL], etc.)")
-    else:
-        summary.append("- Credentials have been removed from export")
-
-    # Import instructions
-    summary.append("\\n## Import Instructions")
-    summary.append("1. Install Keeper Commander CLI if not already installed")
-    summary.append("   - pip install keepercommander")
-    summary.append("2. Log in to Keeper Commander")
-    summary.append("   - keeper login")
-    summary.append("3. Import connections using the PAM-formatted file:")
-    summary.append(f"   - keeper import --format=json {os.path.basename('$pam_format_file')}")
-    summary.append("4. Verify the imported connections in your Keeper vault")
-    summary.append("")
-    summary.append("For detailed instructions, please refer to:")
-    summary.append("https://docs.keeper.io/en/keeperpam/privileged-access-manager/references/importing-pam-records")
-
-    # Print the summary
-    print("\\n".join(summary))
-
-except Exception as e:
-    print(f"Error generating summary: {str(e)}")
-    print(f"Please refer to the exported JSON files for details.")
+For detailed instructions, please refer to:
+https://docs.keeper.io/en/keeperpam/privileged-access-manager/references/importing-pam-records
 EOF
 
     if [[ -f "$summary_file" ]]; then
@@ -1368,8 +1404,6 @@ EOF
         log_warn "Failed to generate export summary"
     fi
 }
-
-
 
 # ================================================================================
 # SECTION 15: MAIN EXECUTION
@@ -1408,4 +1442,3 @@ main() {
     # Run the main function with all arguments
     main "$@"
     # ================================================================================
-
