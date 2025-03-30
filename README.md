@@ -1,4 +1,4 @@
-# Keeper PAM Export Tool
+# KCM - GUACAMOLE to Keeper PAM Export Tool
 
 A utility script that exports Apache Guacamole connection data into Keeper PAM-ready formats for seamless import via Keeper Commander CLI.
 
