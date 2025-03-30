@@ -889,10 +889,10 @@ EOF
 # ================================================================================
 # SECTION 14: DATA EXPORT
 # --------------------------------------------------------------------------------
-# Purpose: Extracts and formats connection data from Guacamole database to PAM format
+# Purpose: Extracts and formats connection data from Guacamole database to Keeper PAM format
 # --------------------------------------------------------------------------------
 export_connection_data() {
-    log_info "Exporting connection data from Guacamole database to PAM format..."
+    log_info "Exporting connection data from Guacamole database to Keeper PAM format..."
 
     if [[ "$CONNECTION_VERIFIED" != "true" ]]; then
         log_error "Database connection not verified. Run verify_db_connection first."
@@ -913,6 +913,7 @@ import mysql.connector
 import json
 import re
 import sys
+import hashlib
 
 # Helper functions for data sanitization
 def sanitize_value(value, mode):
@@ -939,6 +940,11 @@ def sanitize_value(value, mode):
                 # Generic credential
                 return "[CREDENTIAL]"
         return "[CREDENTIAL]"
+
+# Helper function to generate a simple UID from a name
+def generate_uid(name):
+    # Create a simple uid by replacing spaces with underscores and making lowercase
+    return name.lower().replace(' ', '_').replace('-', '_')
 
 try:
     # Connect to the database
@@ -1032,120 +1038,145 @@ try:
     with open('$connections_file', 'w') as f:
         json.dump(keeper_data, f, indent=2)
 
+    # ============================================================================
+    # PREPARE KEEPER PAM EXPORT FOLLOWING DOCUMENTATION
+    # ============================================================================
+    
     # Prepare shared folders for PAM format
     shared_folders = []
     folder_map = {}
+    
+    # Create proper folder objects with uid and path
     for group_id, group in groups.items():
         if group['parent_id'] is None and group['type'] == 'ORGANIZATIONAL':
-            shared_folders.append(group['name'])
-            folder_map[group_id] = group['name']
+            folder_name = group['name']
+            folder_uid = generate_uid(folder_name)
+            
+            # Create folder object with uid AND path
+            folder_obj = {
+                "name": folder_name,
+                "uid": folder_uid,
+                "path": folder_name  # Required by Keeper import
+            }
+            
+            shared_folders.append(folder_obj)
+            folder_map[group_id] = folder_obj
+
+    # If no shared folders found, add a default one
+    if not shared_folders:
+        default_name = "$KEEPER_ROOT_FOLDER"
+        default_uid = generate_uid(default_name)
+        
+        default_folder = {
+            "name": default_name,
+            "uid": default_uid,
+            "path": default_name  # Required by Keeper import
+        }
+        
+        shared_folders.append(default_folder)
     
-    # Directly write PAM format JSON to file - EXACT FORMAT FROM DOCUMENTATION
+    # Create PAM format structure
+    pam_format = {
+        "shared_folders": shared_folders,
+        "records": []
+    }
+    
+    # Process all connections to create PAM records
+    for conn_id, conn in connections.items():
+        # Get basic connection info
+        protocol = conn['protocol']
+        
+        # Handle hostname and port
+        hostname = conn['parameters'].get('hostname', '')
+        if not hostname:
+            hostname = conn['parameters'].get('host', '')
+        
+        port = conn['parameters'].get('port', '')
+        
+        # Fix hostname if it contains port
+        if hostname and ':' in hostname:
+            hostname_parts = hostname.split(':')
+            hostname = hostname_parts[0]
+            if not port:
+                port = hostname_parts[1]
+        
+        # For http connections, try to extract hostname from URL
+        if protocol == 'http' and not hostname:
+            url = conn['parameters'].get('url', '')
+            if url:
+                try:
+                    # Try to extract hostname from URL
+                    if '://' in url:
+                        hostname = url.split('://')[1].split('/')[0]
+                    else:
+                        hostname = url.split('/')[0]
+                    
+                    # Extract port if it's in the hostname
+                    if ':' in hostname:
+                        hostname_parts = hostname.split(':')
+                        hostname = hostname_parts[0]
+                        if not port:
+                            port = hostname_parts[1]
+                except:
+                    pass
+        
+        # Get username/password if available
+        username = conn['parameters'].get('username', 'username')
+        password = conn['parameters'].get('password', 'password')
+        
+        # Determine SSL verification
+        ssl_verification = True
+        if protocol == 'rdp' and conn['parameters'].get('ignore-cert') == 'true':
+            ssl_verification = False
+        elif protocol == 'http' and conn['parameters'].get('url', '').startswith('http:'):
+            ssl_verification = False
+        
+        # Create the record structure with proper field names
+        record = {
+            "title": conn['name'],
+            "type": "pamMachine",
+            "custom_fields": {
+                "pamHostname": {
+                    "hostName": hostname if hostname else "",
+                    "port": port if port else ""
+                },
+                "sslVerification": ssl_verification
+            },
+            "login": username if username else "username",
+            "password": password if password else "password",
+            "folders": []
+        }
+        
+        # Add folder mapping if available - use path string, not object
+        if conn['parent_id'] in folder_map:
+            folder_obj = folder_map[conn['parent_id']]
+            record["folders"].append({
+                "shared_folder": folder_obj["path"],  # Use path string, not object
+                "can_edit": True,
+                "can_share": True
+            })
+        # If no parent folder found but we have a default folder, use it
+        elif shared_folders:
+            record["folders"].append({
+                "shared_folder": shared_folders[0]["path"],  # Use path string, not object
+                "can_edit": True,
+                "can_share": True
+            })
+        
+        # Add the record to the PAM format
+        pam_format["records"].append(record)
+    
+    # Write the PAM format file
     with open('$pam_format_file', 'w') as f:
-        # Write the PAM file with the EXACT format from documentation
-        f.write('{\\n')
-        f.write('  "shared_folders": [\\n')
-        
-        # Write shared folders
-        for i, folder in enumerate(shared_folders):
-            if i < len(shared_folders) - 1:
-                f.write(f'    "{folder}",\\n')
-            else:
-                f.write(f'    "{folder}"\\n')
-        
-        f.write('  ],\\n')
-        f.write('  "records": [\\n')
-        
-        # Process all connections to create PAM records
-        machine_records_count = 0
-        is_first = True
-        
-        for conn_id, conn in connections.items():
-            if not is_first:
-                f.write(',\\n')
-            else:
-                is_first = False
-                
-            # Start the record exactly as in documentation
-            f.write('  {\\n')
-            
-            # Write title
-            title = conn['name'].replace('"', '\\"')  # Escape quotes in title
-            f.write(f'      "title": "{title}",\\n')
-            
-            # Write type - EXACT ORDER FROM DOCUMENTATION
-            f.write('      "$type": "pamMachine",\\n')
-            
-            # Write custom fields - EXACT INDENTATION FROM DOCUMENTATION
-            f.write('        "custom_fields": {\\n')
-            f.write('        "$pamHostname": {\\n')
-            
-            # Get hostname and port
-            hostname = conn['parameters'].get('hostname', conn['parameters'].get('host', ''))
-            port = conn['parameters'].get('port', '')
-            
-            # Clean hostname and port for JSON
-            hostname = hostname.replace('"', '\\"') if hostname else ""
-            port = port.replace('"', '\\"') if port else ""
-            
-            f.write(f'          "hostName": "{hostname}",\\n')
-            f.write(f'          "port": "{port}"\\n')
-            f.write('        },\\n')
-            
-            # Determine SSL verification
-            ssl_verification = True
-            if conn['protocol'] == 'rdp' and conn['parameters'].get('ignore-cert') == 'true':
-                ssl_verification = False
-            elif conn['protocol'] == 'http' and conn['parameters'].get('url', '').startswith('http:'):
-                ssl_verification = False
-                
-            f.write(f'        "$checkbox:sslVerification": {str(ssl_verification).lower()}\\n')
-            f.write('      },\\n')
-            
-            # Handle login and password - EXACT ORDER FROM DOCUMENTATION
-            username = conn['parameters'].get('username', '')
-            password = conn['parameters'].get('password', '')
-            
-            # Use placeholder values if null
-            login_val = '"username"' if not username else f'"{username}"'
-            pass_val = '"password"' if not password else f'"{password}"'
-            
-            f.write(f'      "login": {login_val},\\n')
-            f.write(f'      "password": {pass_val}')
-            
-            # Write folders if available - EXACT STRUCTURE FROM DOCUMENTATION
-            if conn['parent_id'] in folder_map:
-                folder_name = folder_map[conn['parent_id']]
-                f.write(',\\n      "folders": [\\n')
-                f.write('        {\\n')
-                f.write(f'          "shared_folder": "{folder_name}",\\n')
-                f.write('          "can_edit": true,\\n')
-                f.write('          "can_share": true\\n')
-                f.write('        }\\n')
-                f.write('      ]')
-            
-            # End record
-            f.write('\\n  }')
-            
-            machine_records_count += 1
-        
-        # End records array and JSON
-        f.write('\\n  ]\\n')
-        f.write('}')
-    
-    # Fix the file with literal backslashes
-    with open('$pam_format_file', 'r') as original:
-        content = original.read()
-    
-    # Replace literal \n with actual newlines
-    with open('$pam_format_file', 'w') as fixed:
-        fixed.write(content.replace('\\n', '\n'))
+        json.dump(pam_format, f, indent=2)
     
     # Count protocol types for stats
     protocol_stats = {}
+    machine_records_count = 0
     for conn in connections.values():
         protocol = conn['protocol'].upper()
         protocol_stats[protocol] = protocol_stats.get(protocol, 0) + 1
+        machine_records_count += 1
     
     # Create protocol counts as a simple list for display
     protocol_counts = []
@@ -1159,7 +1190,7 @@ try:
         "status": "success",
         "connections_count": len(connections),
         "groups_count": len(groups),
-        "pam_records_count": machine_records_count,
+        "pam_records_count": len(pam_format["records"]),
         "shared_folders_count": len(shared_folders),
         "machine_records_count": machine_records_count,
         "protocol_counts_str": protocol_counts_str
@@ -1252,10 +1283,14 @@ try:
     # Load the exported data
     with open('$connections_file') as f:
         data = json.load(f)
-        
-    # Load PAM format data
+    
+    # Load PAM data
     with open('$pam_format_file') as f:
         pam_data = json.load(f)
+    
+    pam_records_count = len(pam_data.get('records', []))
+    pam_folders_count = len(pam_data.get('shared_folders', []))
+    machine_records_count = sum(1 for r in pam_data.get('records', []) if r.get('type') == 'pamMachine')
 
     connections = data['connections']
     groups = data['groups']
@@ -1269,10 +1304,10 @@ try:
     summary.append("")
 
     # Connection stats
-    summary.append(f"## Export Statistics")
+    summary.append("## Export Statistics")
     summary.append(f"- Total Connections: {len(connections)}")
     summary.append(f"- Total Folders: {len(groups)}")
-    summary.append(f"- Total PAM Records: {len(pam_data['records'])}")
+    summary.append(f"- Total PAM Records: {pam_records_count}")
 
     # Protocol distribution
     protocol_counts = {}
@@ -1280,17 +1315,17 @@ try:
         protocol = conn['protocol']
         protocol_counts[protocol] = protocol_counts.get(protocol, 0) + 1
 
-    summary.append("\n## Connection Types")
+    summary.append("\\n## Connection Types")
     for protocol, count in sorted(protocol_counts.items()):
         summary.append(f"- {protocol.upper()}: {count} connections")
 
     # PAM format info
-    summary.append("\n## PAM Format Details")
-    summary.append(f"- Shared Folders: {len(pam_data['shared_folders'])}")
-    summary.append(f"- Machine Records: {len(pam_data['records'])}")
+    summary.append("\\n## PAM Format Details")
+    summary.append(f"- Shared Folders: {pam_folders_count}")
+    summary.append(f"- Machine Records: {machine_records_count}")
 
     # Sanitization info
-    summary.append("\n## Credential Sanitization")
+    summary.append("\\n## Credential Sanitization")
     summary.append(f"- Mode: {'$SANITIZE_MODE'}")
 
     if '$SANITIZE_MODE' == 'none':
@@ -1301,14 +1336,12 @@ try:
         summary.append("- Credentials have been removed from export")
 
     # Import instructions
-    summary.append("\n## Import Instructions")
+    summary.append("\\n## Import Instructions")
     summary.append("1. Install Keeper Commander CLI if not already installed")
     summary.append("   - pip install keepercommander")
     summary.append("2. Log in to Keeper Commander")
     summary.append("   - keeper login")
-    summary.append("3. Import connections using the Commander import command:")
-    summary.append(f"   - keeper import --format=json {os.path.basename('$connections_file')}")
-    summary.append("   OR import using the PAM-formatted file:")
+    summary.append("3. Import connections using the PAM-formatted file:")
     summary.append(f"   - keeper import --format=json {os.path.basename('$pam_format_file')}")
     summary.append("4. Verify the imported connections in your Keeper vault")
     summary.append("")
@@ -1316,7 +1349,7 @@ try:
     summary.append("https://docs.keeper.io/en/keeperpam/privileged-access-manager/references/importing-pam-records")
 
     # Print the summary
-    print("\n".join(summary))
+    print("\\n".join(summary))
 
 except Exception as e:
     print(f"Error generating summary: {str(e)}")
@@ -1335,6 +1368,8 @@ EOF
         log_warn "Failed to generate export summary"
     fi
 }
+
+
 
 # ================================================================================
 # SECTION 15: MAIN EXECUTION
@@ -1373,3 +1408,4 @@ main() {
     # Run the main function with all arguments
     main "$@"
     # ================================================================================
+
