@@ -1,168 +1,118 @@
-# Guacamole - Keeper Connection Manager - Export Tool
+# Keeper PAM Export Tool
 
-## Disclaimer
+A utility script that exports Apache Guacamole connection data into Keeper PAM-ready formats for seamless import via Keeper Commander CLI.
 
-⚠️ **Caution**: This tool modifies system configurations, interacts with Docker containers, and handles sensitive connection data. It may restart services, expose ports, and generate exports of connection information. 
+## Features
 
-Use carefully, always create backups, and test in a non-production environment first. The authors are not responsible for any unintended consequences.
+- 🔄 **Export Connection Data**: Extracts Guacamole connections in Keeper PAM-compatible format
+- 🔎 **Connection Analysis**: Analyzes your Guacamole connection types and hierarchy
+- 🔒 **Credential Sanitization**: Multiple sanitization options for secure exports
+- 🔧 **Auto-Configuration**: Detects and configures database connectivity
+- 📊 **Summary Reports**: Generates comprehensive export statistics
 
 ## Overview
 
-The Guacamole Export Tool is a Bash script designed to export Apache Guacamole connection data into standard JSON/CSV and Keeper PAM-ready formats. It provides flexible export options, secure credential handling, and optional direct import to Keeper Vault.
-
-Features
-🔍 Interactive and CLI modes
-
-🔒 Credential sanitization options (none, placeholder, remove)
-
-📦 Export in multiple formats:
-
-Standard Guacamole full data export (.json and .csv)
-
-Keeper PAM-ready export (.json and .csv)
-
-📥 Optional direct import to Keeper Vault using Keeper Commander
-
-🛠 Docker Compose file port inspection and patching
-
-Automatically detects if MySQL port is exposed
-
-Offers to patch and backup the compose file if not
-
-🌐 Supports various Guacamole connection configurations
-
-Compatible with different protocols and versions
-
-🧪 MySQL connectivity test (via mysqladmin, optional)
-
-🧰 Dependency auto-check and installation
-
-Verifies all required tools and Python modules
-
-Automatically installs mysql-connector-python if missing
+The Keeper PAM Export Tool simplifies migrating Apache Guacamole connections to Keeper's Privileged Access Management system. It automatically inspects your Docker Compose configuration, extracts database credentials, and transforms connection data into the proper format for Keeper PAM import.
 
 ## Prerequisites
 
-- Bash
+- Bash shell environment
 - Python 3
-- Required Python modules:
+- Docker and Docker Compose
+- MySQL client (optional, for enhanced connectivity checks)
+- Python modules:
   - `pyyaml`
-  - `mysql-connector-python`
-- Optional: Keeper Commander (for Keeper Vault import)
-
-## Installation
-
-1. Clone the repository or download the script
-2. Make the script executable:
-   ```bash
-   chmod +x guac-export.sh
-   ```
-3. Install required Python dependencies:
-   ```bash
-   pip install pyyaml mysql-connector-python
-   ```
-4. Optional: Install Keeper Commander
-   ```bash
-   pip install keeper-commander
-   ```
+  - `mysql-connector-python` (auto-installed if missing)
+  - `json`
 
 ## Usage
 
 ### Interactive Mode
 
-Run the script without arguments to enter interactive mode:
+Simply run the script without arguments to enter interactive mode:
+
 ```bash
-./guac-export.sh
+./keeper-pam-export.sh
 ```
+
+The script will guide you through configuration options including credential sanitization preferences and folder organization.
 
 ### CLI Mode
 
-#### Export Options
-- `--keeper`: Export Keeper PAM-ready JSON
-- `--standard`: Export full Guacamole data
-- `--both`: Export both formats
+For automated or unattended operation, use CLI flags:
 
-#### Additional Flags
-- `--output-dir DIR`: Custom export directory
-- `--filename-prefix PREFIX`: Prefix for output files
-- `--push-to-keeper`: Push Keeper records using Keeper Commander
-- `--compose-file FILE`: Path to docker-compose.yml
-- `--db-host HOST`: Database host (default: localhost)
-- `--db-port PORT`: Database port (default: 3306)
-- `--sanitize MODE`: Credential sanitization mode (none, placeholder, remove)
+```bash
+./keeper-pam-export.sh --export --sanitize placeholder
+```
 
-### Examples
+### Available Options
 
-1. Interactive export:
-   ```bash
-   ./guac-export.sh
-   ```
+```
+Flags:
+  --export            Run export with default settings
+  --output-dir DIR    Custom export directory (default: current directory)
+  --filename-prefix   Prefix for output files (default: keeper)
+  --compose-file      Path to docker-compose.yml (default: /etc/kcm-setup/docker-compose.yml)
+  --db-host           Database host (default: localhost)
+  --db-port           Database port (default: 3306)
+  --sanitize          Credentials sanitization mode: none, placeholder, remove (default: placeholder)
+  --keeper-folder     Root folder for Keeper PAM import (default: Guacamole)
+  --debug             Enable debug logging
+  --help              Show this help message
+  --version           Show version information
+```
 
-2. Export both standard and Keeper formats:
-   ```bash
-   ./guac-export.sh --both
-   ```
+## Credential Sanitization Options
 
-3. Export to a specific directory with a custom prefix:
-   ```bash
-   ./guac-export.sh --keeper --output-dir /path/to/exports --filename-prefix myguac
-   ```
+The tool provides three sanitization modes for handling sensitive connection credentials:
 
-4. Push to Keeper Vault after exporting:
-   ```bash
-   ./guac-export.sh --keeper --push-to-keeper
-   ```
-
-## Credential Sanitization Modes
-
-- `none`: Include actual credentials (least secure)
-- `placeholder`: Replace credentials with placeholders (recommended)
-- `remove`: Remove credential fields completely
+1. **none**: Export actual credentials as-is (least secure)
+2. **placeholder**: Replace credentials with secure placeholders like `[PASSWORD]` (recommended)
+3. **remove**: Completely remove credential information from exports (most secure)
 
 ## Docker Compose Integration
 
 The script can automatically:
-- Inspect your docker-compose.yml file
+- Inspect your docker-compose.yml configuration
 - Detect if database ports are exposed
-- Offer to patch and expose database ports
+- Offer to safely patch and backup your compose file
+- Restart containers with the new configuration
 
-## Security Notes
+## Export Process
 
-- Always be cautious when handling connection credentials
-- Use the sanitization modes to protect sensitive information
-- Ensure the script and exported files have restricted permissions
+1. The script first inspects your Docker Compose configuration
+2. It extracts database credentials and tests connectivity
+3. Connection data is exported to both raw and Keeper PAM formats
+4. A comprehensive summary is generated with import instructions
+
+## Import to Keeper PAM
+
+After export, you can import the data to Keeper PAM using Keeper Commander:
+
+```bash
+keeper import --format=json keeper_pam_format_TIMESTAMP.json
+```
+
+## Security Considerations
+
+- Always review exported data before importing
+- Use credential sanitization when sharing export files
+- Ensure proper permissions on export directory
+- Consider removing export files after successful import
 
 ## Troubleshooting
 
-- Verify Python dependencies are installed
-- Check Docker Compose file path
-- Ensure database connectivity
-- Review script logs for detailed error messages
+If you encounter issues:
 
-## Contributing
+1. Enable debug mode with `--debug` flag
+2. Verify database connectivity manually
+3. Check Docker Compose configuration
+4. Ensure your Guacamole database is properly configured
 
-Contributions, issues, and feature requests are welcome! Feel free to check the issues page.
+## License
 
-## Licensing
+This tool is licensed under the Creative Commons Attribution-NonCommercial 4.0 International License.
 
-### Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)
+## Disclaimer
 
-#### You are free to:
-- **Share** — copy and redistribute the material in any medium or format
-- **Adapt** — remix, transform, and build upon the material
-
-#### Under the following terms:
-- **Attribution** — You must give appropriate credit to the original creator
-- **NonCommercial** — You may not use the material for commercial purposes
-
-#### Additional Restrictions:
-- Commercial use of this work requires explicit written permission from the original creator
-- Any derivative works must be shared under the same license terms
-- Attribution must include the original creator's name and a link to the original work
-
-#### Full License Details
-For complete license terms, visit: [Creative Commons Attribution-NonCommercial 4.0 International License](http://creativecommons.org/licenses/by-nc/4.0/)
-
-[![CC BY-NC 4.0](https://i.creativecommons.org/l/by-nc/4.0/88x31.png)](http://creativecommons.org/licenses/by-nc/4.0/)
-
-**Note:** For commercial use or additional permissions, please contact the original author.
+⚠️ **Caution**: This tool modifies system configurations and handles connection data. Always test in a non-production environment first and create backups before use.
