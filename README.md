@@ -109,10 +109,6 @@ If you encounter issues:
 3. Check Docker Compose configuration
 4. Ensure your Guacamole database is properly configured
 
-## License
-
-This tool is licensed under the Creative Commons Attribution-NonCommercial 4.0 International License.
-
 ## Disclaimer
 
 ⚠️ **Caution**: This tool modifies system configurations and handles connection data. Always test in a non-production environment first and create backups before use.
